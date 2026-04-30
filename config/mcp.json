@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "telegram": {
+      "command": "/Users/jasonzb/Library/Caches/pypoetry/virtualenvs/claude-code-telegram-wRKofjL5-py3.12/bin/python",
+      "args": ["src/mcp/telegram_server.py"]
+    },
+    "stephanie-network": {
+      "command": "/Users/jasonzb/Library/Caches/pypoetry/virtualenvs/claude-code-telegram-wRKofjL5-py3.12/bin/python",
+      "args": ["/Users/jasonzb/mcp-servers/stephanie-network/server.py"]
+    }
+  }
+}

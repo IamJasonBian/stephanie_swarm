@@ -34,6 +34,15 @@ chmod 600 /Users/$USER/claude-code-telegram-$BOT/.env
 CLAUDE_CONFIG_DIR=/Users/$USER/.claude-<account-slot> claude  # then /login
 ```
 
+## MCP servers
+
+```bash
+mkdir -p ~/.config/stephanie-network ~/mcp-servers/stephanie-network
+cp ~/stephanie_swarm/config/mcp.json ~/.config/stephanie-network/mcp.json
+cp ~/stephanie_swarm/mcp-servers/stephanie-network/server.py ~/mcp-servers/stephanie-network/server.py
+```
+The `mcp.json` paths assume the upstream `claude-code-telegram` source repo is at `/Users/<you>/claude-code-telegram/` and its Poetry venv exists. If venv path or username differs, edit `~/.config/stephanie-network/mcp.json`.
+
 ## Tailscale (remote ops)
 
 ```bash
