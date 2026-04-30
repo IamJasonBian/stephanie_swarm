@@ -1,4 +1,5 @@
 distributed_stephanie_bots
+@stephanie_penguin_bot - telegram bot leadernode
 
 ## Install on a new Mac
 
