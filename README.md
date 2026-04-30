@@ -6,9 +6,11 @@ distributed_stephanie_bots
 brew install gh jq tailscale
 git clone https://github.com/stephanieisapenguin/stephanie_swarm.git ~/stephanie_swarm
 mkdir -p ~/bin ~/.config ~/Library/LaunchAgents
-install -m 755 ~/stephanie_swarm/bin/stephanie-uptime.sh           ~/bin/
-install -m 755 ~/stephanie_swarm/bin/stephanie-uptime-gist-push.sh ~/bin/
-install -m 755 ~/stephanie_swarm/bin/stephanie-mapping-push.sh     ~/bin/
+install -m 755 ~/stephanie_swarm/bin/stephanie-uptime.sh             ~/bin/
+install -m 755 ~/stephanie_swarm/bin/stephanie-uptime-gist-push.sh   ~/bin/
+install -m 755 ~/stephanie_swarm/bin/stephanie-mapping-push.sh       ~/bin/
+install -m 755 ~/stephanie_swarm/bin/stephanie-bot-launcher.sh       ~/bin/
+install -m 755 ~/stephanie_swarm/bin/stephanie-bots-plists-install.sh ~/bin/
 cp ~/stephanie_swarm/LaunchAgents/com.jasonzb.stephanie-uptime.plist      ~/Library/LaunchAgents/
 cp ~/stephanie_swarm/LaunchAgents/com.jasonzb.stephanie-uptime-gist.plist ~/Library/LaunchAgents/
 echo 'HEALTHCHECKS_URL=https://hc-ping.com/<paste-uuid>' > ~/.config/stephanie-uptime.conf
@@ -40,13 +42,19 @@ sudo tailscale up --ssh --operator=$USER
 tailscale status
 ```
 
-## Restart the stack
+## Tier 1 uptime config
 
 ```bash
-for d in /Users/jasonzb/claude-code-telegram*/; do
-  d="${d%/}"; [ -f "$d/.env" ] || continue
-  lsof -t "$d/data/bot.db" >/dev/null 2>&1 || (cd "$d" && nohup /Users/jasonzb/.local/bin/claude-telegram-bot >> bot.log 2>&1 < /dev/null &)
+sudo pmset -a sleep 0 disksleep 0 powernap 0 autorestart 1
+sudo pmset repeat wakeorpoweron MTWRFSU 03:00:00
+```
+Also enable Automatic Login (System Settings → Users & Groups → Login Options) and disable forced macOS updates (System Settings → Software Update → Advanced).
+
+## Restart the stack (rerun-safe)
+
+```bash
+~/bin/stephanie-bots-plists-install.sh
+for plist in ~/Library/LaunchAgents/com.jasonzb.stephanie-{uptime,uptime-gist,bot.*}.plist; do
+  launchctl load -w "$plist" 2>/dev/null
 done
-launchctl load -w ~/Library/LaunchAgents/com.jasonzb.stephanie-uptime.plist 2>/dev/null
-launchctl load -w ~/Library/LaunchAgents/com.jasonzb.stephanie-uptime-gist.plist 2>/dev/null
 ```
