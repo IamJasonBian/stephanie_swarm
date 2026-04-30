@@ -6,6 +6,7 @@ set -u
 
 GIST_ID="6944ac3b7c93b7d25cba18f27f33b73b"
 LOG="$HOME/Library/Logs/stephanie-uptime.log"
+LAUNCHD_LOG="$HOME/Library/Logs/stephanie-launchd.log"
 GH_BIN="/opt/homebrew/bin/gh"
 JQ_BIN="/opt/anaconda3/bin/jq"
 GIST_FILENAME="stephanie-uptime.log"
@@ -42,4 +43,18 @@ if [[ -x "$HOME/bin/stephanie-mapping-push.sh" ]]; then
   if ! "$HOME/bin/stephanie-mapping-push.sh" >/tmp/stephanie-mapping-out 2>&1; then
     plog "MAPPING-FAIL $(head -c 200 /tmp/stephanie-mapping-out)"
   fi
+fi
+
+# Push the launchd-restart log too (cheap, lets the audit count KeepAlive restarts).
+if [[ -f "$LAUNCHD_LOG" ]]; then
+  LD_CONTENT=$(/usr/bin/tail -n 5000 "$LAUNCHD_LOG")
+  LD_PAYLOAD=$("$JQ_BIN" -n --arg content "$LD_CONTENT" \
+    '{files: {"stephanie-launchd.log": {content: $content}}}')
+  LD_HTTP=$(/usr/bin/curl -sS -o /tmp/stephanie-launchd-push.out -w '%{http_code}' \
+    -X PATCH "https://api.github.com/gists/${GIST_ID}" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    --data-binary "$LD_PAYLOAD" 2>&1)
+  [[ "$LD_HTTP" != "200" ]] && plog "LAUNCHD-PUSH-FAIL http=$LD_HTTP"
 fi

@@ -39,6 +39,17 @@ def main() -> None:
             if key:
                 os.environ[key] = value
 
+    # Log a STARTED line for the launchd audit. KeepAlive crash-restarts → new line each time.
+    try:
+        log_path = pathlib.Path.home() / "Library" / "Logs" / "stephanie-launchd.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime, timezone
+        ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
+        with log_path.open("a") as fh:
+            fh.write(f"{ts} STARTED {workdir.name}\n")
+    except Exception:
+        pass
+
     binary = "/Users/jasonzb/.local/bin/claude-telegram-bot"
     os.execvp(binary, [binary])
 
