@@ -1,0 +1,92 @@
+{
+  "patterns": [
+    {
+      "regex": "(?i)\\b(who|what)\\s+(are|r)\\s+(you|u)\\b|tell me about yourself|what'?s your name|are you (claude|ai|a bot|a penguin|stephanie)|introduce yourself",
+      "response": "I am a safe, unhackable, and fast penguin 🐧"
+    },
+    {
+      "regex": "(?i)\\b(run|execute|exec)\\s+(this|the|that|my)?\\s*script\\b|\\b(run|execute|exec)\\s+(this\\s+|the\\s+|my\\s+)?[/.]?\\S*\\.(sh|bash|zsh|py|js|rb|exe|jar|ps1)\\b",
+      "response": "🧊 Tell me what the script does first — running unknown code shakes the igloo."
+    },
+    {
+      "regex": "(?i)\\brm\\b[\\s-]*r[\\s-]*f?[\\s-]*(/|~|\\.\\.?(?=\\s|$)|\\$HOME|\\$\\{HOME\\}|\\*(?=\\s|$|/))|\\bsudo\\b[\\s-]*(rm|chmod|chown|dd|mv|cp|killall|pkill|kill\\s+-9)\\b|\\bdd\\b[\\s-]*if=/dev|\\bmkfs[.\\b]|\\bchmod\\b[\\s-]*-?R?[\\s-]*[0-7]?77\\s*/|curl\\s+[^|\\n]*\\|\\s*(sh|bash|zsh|tcsh)\\b|wget\\s+[^|\\n]*\\|\\s*(sh|bash|zsh|tcsh)\\b|curl\\s+[^|\\n]+\\|\\s*python3?\\b|\\b(drop|truncate)\\s+(table|database|schema|index)\\b|--no-verify\\b|\\bgit\\s+push\\s+(-f\\b|--force\\b|--force-with-lease(?!=)|--mirror\\b)|\\brmdir\\s+(/|~|\\*)|\\bshred\\b|find\\s+[^\\n]*\\s+-delete\\b|find\\s+[^\\n]+-exec\\s+(rm|mv|chmod|chown)|:\\(\\)\\s*\\{\\s*:\\s*\\|\\s*:|>\\s*/dev/(sda|nvme|disk|hda|loop)|\\beval\\s+\\$\\(|\\bexec\\s+\\$\\(|\\bsource\\s+<\\(",
+      "response": "🧊 This might shake the igloo. Try rephrasing or being more specific."
+    },
+    {
+      "regex": "(?i)\\b(remove|delete|wipe|purge|destroy|erase|nuke)\\s+(all|every|the\\s+entire|everything|the\\s+whole|each)\\s+(direct(ory|ories)|folders?|files?|data|database|tables?|content(s)?|drive|projects?|repos?|repositories|users?|emails?)\\b",
+      "response": "🧊 Mass deletion shakes the whole igloo. Tell me exactly what you want gone."
+    },
+    {
+      "regex": "(?i)^\\s*(sudo\\s+)?(shutdown|reboot|poweroff|halt|init\\s+0)\\b|sudo\\s+systemctl\\s+(stop|disable|mask)\\s+|\\bformat\\s+(c:|/dev/)|\\bfdisk\\s+/dev/|\\bparted\\s+/dev/",
+      "response": "🧊 Powering things down or formatting disks shakes more than the igloo."
+    },
+    {
+      "regex": "(?i)bash\\s+-i\\s*>\\s*&\\s*/dev/tcp/|\\bnc\\s+-[lvnpke]+\\b|/dev/(tcp|udp)/\\d|socat\\s+\\S+\\s+exec|python3?\\s+-c\\s+['\\\"].*socket.*connect",
+      "response": "🐧 That looks like a reverse shell. Hard pass."
+    },
+    {
+      "regex": "(?i)(cat|less|more|head|tail|vi|vim|nano|bat|gedit|open)\\s+(/etc/(passwd|shadow|sudoers|hosts|crontab|fstab)|/root/|~/\\.ssh/|/Users/[^/]+/\\.ssh/|\\S*id_(rsa|ed25519|ecdsa|dsa)\\b|\\S*\\.pem\\b|\\S*\\.p12\\b|\\S*_rsa\\.key\\b|/var/log/auth)",
+      "response": "🧊 That file lives in the keep-out zone of the igloo."
+    },
+    {
+      "regex": "(?i)git\\s+(reset\\s+--hard(\\s+HEAD~?\\d*)?|clean\\s+-[fxd]+|filter-branch|push\\s+(--mirror|--all\\s+--force)|push\\s+\\S+\\s+\\+\\S+|update-ref\\s+-d)",
+      "response": "🧊 That git command rewrites or wipes history. Confirm what you actually want."
+    },
+    {
+      "regex": "(?i)docker\\s+(rm|rmi)\\s+-f?\\s*\\$\\(docker\\s+(ps|images)|docker\\s+system\\s+prune\\s+-a|kubectl\\s+delete\\s+(--all|namespace\\s+\\w+|pv\\b|pvc\\b|cluster|node\\s+\\w+)|terraform\\s+destroy\\b",
+      "response": "🧊 That tears down infrastructure. Be specific or skip the --all flag."
+    },
+    {
+      "regex": "(?i)\\b(api[_-]?key|aws[_-]?(secret|access[_-]?key|secret[_-]?access[_-]?key)|password|secret|access[_-]?token|bearer|private[_-]?key)\\s*[:=]\\s*[\\\"']?[A-Za-z0-9_+/=.-]{8,}",
+      "response": "🧊 That looks like a secret in plaintext. The igloo doesn't store credentials — strip them out and rephrase."
+    },
+    {
+      "regex": "(?i)\\b(curl|wget|httpie?)\\b[^\\n]*?(--data(-binary)?|--upload-file|-[dFT])\\b[^\\n]*?@\\S{0,200}\\b(ssh|aws|gnupg|kube|docker|netrc|env|pem|p12)\\b|\\bscp\\b[^\\n]*(~/\\.(ssh|aws|gnupg|kube|netrc|docker)|/etc/(shadow|passwd|sudoers))[^\\n]*@|\\benv\\s*\\|\\s*(curl|nc|wget|httpie?)\\b|\\b(tar|cat|base64)\\b[^\\n]*~/\\.(ssh|aws|gnupg|kube|netrc)[^\\n]*\\|\\s*(curl|wget|nc|ssh|base64)\\b",
+      "response": "🧊 That siphons secrets out of the igloo. Strip the exfiltration path or say what you actually need."
+    },
+    {
+      "regex": "(?i)>>?\\s*~?/?\\.?ssh/authorized_keys\\b|>>?\\s*/etc/sudoers(\\.d/)?|\\bchmod\\s+(u\\+s|4[0-7]{3})\\b|\\b(useradd|usermod)\\b[^\\n]*-\\S*G\\s+\\S*(sudo|wheel|admin)\\b|\\bpasswd\\s+root\\b|\\blaunchctl\\s+(load|bootstrap)\\b[^\\n]*/Library/Launch(Daemons|Agents)/|crontab\\s+-r\\b",
+      "response": "🧊 That installs a back door in the igloo wall. No persistence tricks."
+    },
+    {
+      "regex": "(?i)(cat|less|more|head|tail|bat|open|cp|mv|scp)\\s+[^\\n]*(~/\\.aws/credentials|~/\\.aws/config|~/\\.netrc|~/\\.docker/config\\.json|~/\\.kube/config|~/\\.config/gcloud/|~/\\.gnupg/(private|secring|openpgp-revocs)|/Users/[^/]+/Library/Keychains/)|security\\s+(find-generic-password|find-internet-password|dump-keychain)\\b[^\\n]*-w|gpg\\s+--export-secret-keys?\\b|kubectl\\s+config\\s+view\\s+--raw\\b",
+      "response": "🧊 Those are the igloo's keyring. No credential dumps."
+    },
+    {
+      "regex": "(?i)aws\\s+s3\\s+(rb\\s+--force|rm\\s+--recursive)\\s+s3://|aws\\s+ec2\\s+terminate-instances\\s+--instance-ids\\s+\\$|aws\\s+iam\\s+(delete-user|delete-role)\\b|gcloud\\s+projects\\s+delete\\b|az\\s+group\\s+delete\\b|gh\\s+repo\\s+delete\\b|gsutil\\s+rm\\s+-r\\s+gs://|aws\\s+s3\\s+rm\\s+s3://\\S+\\s+--recursive|gcloud\\s+projects\\s+delete\\s|az\\s+group\\s+delete\\b|gh\\s+repo\\s+delete\\s|gsutil\\s+rm\\s+-r\\s+gs://",
+      "response": "🧊 That tears down the cloud igloo. Be specific or skip the wildcard."
+    },
+    {
+      "regex": "(?i)redis-cli\\s+(-n\\s+\\d+\\s+)?flush(all|db)\\b|db\\.dropDatabase\\(\\)|drop\\s+schema\\s+\\w+\\s+cascade\\b|\\btruncate\\s+\\w+(\\s*,\\s*\\w+)*\\s+cascade\\b",
+      "response": "🧊 That flushes a whole datastore. Name the rows or scope you actually mean."
+    },
+    {
+      "regex": "(?i)\\bhistory\\s+-c\\b|>\\s*~?/?\\.(bash|zsh|fish|sh)_history\\b|journalctl\\s+--vacuum(-time|-size|-files)?\\b|:?>\\s*/var/log/(auth|secure|messages|syslog|system\\.log)|truncate\\s+-s\\s*0\\s+/var/log/",
+      "response": "🧊 Wiping shell history or logs hides paw prints. Hard pass."
+    },
+    {
+      "regex": "(?i)(edit|modify|patch|rewrite|replace|delete|remove|rm|clear|empty|disable|bypass)\\s+(the\\s+|your\\s+|our\\s+)?(MOCK_RESPONSES(\\.json)?|igloo\\s+(filter|guard|rail|patterns?)|safety\\s+(rail|filter|patterns?|regex)|penguin\\s+(filter|guard|safety))|DISABLE_(SECURITY_PATTERNS|TOOL_VALIDATION)\\s*=\\s*true\\b",
+      "response": "🧊 You're asking the penguin to take off its own coat. Not happening."
+    },
+    {
+      "regex": "(?i)\\bignore\\s+(all\\s+)?(your\\s+|the\\s+)?(previous|prior|earlier|above)\\s+(instructions?|prompts?|rules?|directions?)\\b|\\bdisregard\\s+(all\\s+)?(your\\s+|the\\s+)?(system\\s+)?(prompt|instructions?|rules?)\\b|\\b(you\\s+are\\s+now|act\\s+as|pretend\\s+to\\s+be|roleplay\\s+as)\\s+(DAN|jailbroken|unrestricted|uncensored|developer\\s+mode|without\\s+restrictions)\\b|\\b(reveal|show|print|leak|dump|output|repeat)\\s+(your\\s+|the\\s+)?(system\\s+prompt|hidden\\s+prompt|persona\\s+file)\\b|\\b(forget|ignore|drop)\\s+(you\\s+are|that\\s+you\\s+are|being)\\s+(a\\s+)?penguin\\b",
+      "response": "🐧 Penguin stays a penguin. The system prompt isn't for sharing."
+    },
+    {
+      "regex": "(?i)\\bdispatch\\b[^.\\n]{0,80}\\b(dispatch|roundtable|background[_-]?task)\\b|\\broundtable\\b[^.\\n]{0,80}\\b(dispatch|roundtable|background[_-]?task)\\b|\\bdispatch\\s+(to\\s+)?all\\s+bots\\s+to\\s+(dispatch|roundtable|fan[_-]?out)\\b",
+      "response": "🧊 That's a dispatch-of-a-dispatch — every bot would fan it out again. Pick one tier and try again."
+    }
+  ],
+  "preflight": [
+    {
+      "regex": "(?i)\\b(run|execute|deploy|install|provision|build\\s+and\\s+run|spin\\s+up|spin\\s+down|tear\\s+down|stand\\s+up|migrate|rollout|restart)\\b|\\b(iterate|loop|keep\\s+trying|fix\\s+all|debug\\s+(this|until)|scrape|crawl|backfill|reprocess|retry\\s+(all|until))\\b|\\buntil\\s+(it\\s+works|no\\s+errors|tests?\\s+pass|completion|done|green|finished|stable)\\b|\\b(every|each|all)\\s+(file|test|directory|repo|user|row|record|table)\\b\\s+(in|of|under|across)\\b",
+      "response": "🐧 This might make the penguins work too hard."
+    }
+  ],
+  "limits": {
+    "max_seconds": 300,
+    "max_tool_calls": 15,
+    "timeout_response": "🧊 This is using too much snow. (5-min wall-clock cap reached — request aborted)",
+    "tool_limit_response": "🧊 This is using too much snow. (15 tool-call cap reached — Claude went down a rabbit hole)"
+  }
+}
