@@ -48,6 +48,18 @@ P50 corresponds to `num_turns: 1` — one short Claude API turn, no tool use. Th
 - **All 9 bots share one Claude account.** Watch the rate-limit math when adding more.
 - **Sessions auto-resume per `(user, working_directory)`.** Settings changes (CLAUDE.md, system prompt) don't reach an in-flight session — user must `/new` or you must bounce.
 
+## P99 event log (>10 min Claude sessions)
+
+Long-running Claude sessions get appended to a single log file as they happen:
+
+- **`/Users/jasonzb/.claude-stephanie2/PENGUIN_P99_EVENTS.log`** — append-only, one line per event.
+
+Format: `<iso8601-timestamp>  bot=<workdir-name>  duration=<sec>s  turns=<n>  cost=$<usd>  ok|ERROR  session=<uuid>`
+
+Wired by `~/bin/penguin-p99-scan.sh` (Python), scheduled by `~/Library/LaunchAgents/com.jasonzb.penguin-p99.plist` every 5 min. Dedup state in `~/Library/Application Support/penguin-p99/<bot>.last`. Threshold is hardcoded at 600,000 ms (10 min).
+
+To inspect: `tail -f ~/.claude-stephanie2/PENGUIN_P99_EVENTS.log`. To raise/lower the threshold, edit `THRESHOLD_MS` in the script. Historical baseline (before this logger existed): worst session ever was 501s (~8.4 min) — no events exceeded 10 min, so the log starts empty and only grows when actual tail events occur.
+
 ## Operational landmarks
 
 - Repo (source of truth for ops scripts): https://github.com/stephanieisapenguin/stephanie_swarm
