@@ -7,6 +7,10 @@
     "stephanie-network": {
       "command": "/Users/jasonzb/Library/Caches/pypoetry/virtualenvs/claude-code-telegram-wRKofjL5-py3.12/bin/python",
       "args": ["/Users/jasonzb/mcp-servers/stephanie-network/server.py"]
+    },
+    "nyc-tow-finder": {
+      "command": "/Users/jasonzb/Library/Caches/pypoetry/virtualenvs/claude-code-telegram-wRKofjL5-py3.12/bin/python",
+      "args": ["/Users/jasonzb/mcp-servers/nyc-tow-finder/server.py"]
     }
   }
 }

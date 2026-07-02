@@ -47,6 +47,21 @@ cp ~/stephanie_swarm/mcp-servers/stephanie-network/server.py ~/mcp-servers/steph
 ```
 The `mcp.json` paths assume the upstream `claude-code-telegram` source repo is at `/Users/<you>/claude-code-telegram/` and its Poetry venv exists. If venv path or username differs, edit `~/.config/stephanie-network/mcp.json`.
 
+### nyc-tow-finder
+
+Exposes NYC's public "Find Your Towed Vehicle" lookup as MCP tools
+(`find_towed_vehicle`, `list_states`, `list_plate_types`). See
+[`mcp-servers/nyc-tow-finder/README.md`](mcp-servers/nyc-tow-finder/README.md)
+for how it bypasses the site's Akamai bot protection (`curl_cffi` TLS
+impersonation) and reconstructs the NYCSERV pipe-protocol.
+
+```bash
+mkdir -p ~/mcp-servers/nyc-tow-finder
+cp ~/stephanie_swarm/mcp-servers/nyc-tow-finder/*.py           ~/mcp-servers/nyc-tow-finder/
+cp ~/stephanie_swarm/mcp-servers/nyc-tow-finder/reference.json ~/mcp-servers/nyc-tow-finder/
+pip install "mcp[cli]" curl_cffi   # into the interpreter mcp.json points at
+```
+
 ## Tailscale (remote ops)
 
 ```bash
