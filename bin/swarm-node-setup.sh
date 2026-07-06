@@ -53,8 +53,16 @@ if [ ! -f "$SERVICES_DIR/.env" ]; then
 #ANTHROPIC_API_KEY=
 #OPENROUTER_API_KEY=
 #TUNNEL_TOKEN=
-# hub only — every compute node in the pool, comma-separated:
-#COMPUTE_URLS=http://localhost:8878,http://other-mac.tailnet-name.ts.net:8878
+#CLAUDE_BACKEND=cli
+
+# node discovery (worker nodes): where the hub's dispatch lives + the shared
+# key from the hub's services/.env. Compute self-registers and heartbeats;
+# no COMPUTE_URLS editing needed.
+#DISPATCH_URL=http://<hub-tailscale-ip>:8877
+#SWARM_KEY=
+
+# hub only — SWARM_KEY enables /nodes/register; static pool entries optional:
+#COMPUTE_URLS=http://localhost:8878
 EOF
   chmod 600 "$SERVICES_DIR/.env"
   echo "==> wrote $SERVICES_DIR/.env template (fill in keys as needed)"
@@ -79,6 +87,13 @@ sleep 3
 HOSTNAME_TS="$(command -v tailscale >/dev/null && tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' | sed 's/\.$//' || true)"
 ADDR="${HOSTNAME_TS:-$(ipconfig getifaddr en0 2>/dev/null || hostname)}"
 echo ""
-echo "==> node ready. To add it to the pool, append to the hub's services/dispatch/.env:"
-echo "    COMPUTE_URLS=...,http://${ADDR}:8878"
-echo "    then restart dispatch:  launchctl kickstart -k gui/\$(id -u)/com.\$USER.swarm-svc.dispatch"
+if grep -q "^DISPATCH_URL=" "$SERVICES_DIR/.env" && grep -q "^SWARM_KEY=" "$SERVICES_DIR/.env"; then
+  echo "==> node ready — it will self-register with the hub and join the pool"
+  echo "    (watch: grep register $SERVICES_DIR/compute.log)"
+else
+  echo "==> node ready. To join the hub's pool automatically, set in $SERVICES_DIR/.env:"
+  echo "      DISPATCH_URL=http://<hub-tailscale-ip>:8877"
+  echo "      SWARM_KEY=<value from the hub's services/.env>"
+  echo "    then: launchctl kickstart -k gui/\$(id -u)/com.\$USER.swarm-svc.compute"
+  echo "    (manual alternative: add http://${ADDR}:8878 to COMPUTE_URLS on the hub)"
+fi

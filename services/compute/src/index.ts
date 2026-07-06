@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
 import { readFileSync } from "node:fs";
+import { networkInterfaces } from "node:os";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hermesChat, hermesHealthy, hermesModelName, BackendUnavailable, type ChatRequest } from "./backends/ollama.ts";
@@ -154,3 +155,57 @@ app.post("/v1/execute", async (c) => {
 serve({ fetch: app.fetch, port: PORT }, (info) => {
   console.log(`compute service listening on :${info.port}`);
 });
+
+// ---------------------------------------------------------------------------
+// Node discovery: announce this compute node to the hub so it joins the pool
+// without editing COMPUTE_URLS. Needs DISPATCH_URL + SWARM_KEY in the env
+// (services/.env); silently disabled otherwise. Heartbeats every 60s — the
+// hub expires us ~150s after the last one, so a dead laptop leaves the pool
+// on its own.
+const HUB_URL = (process.env.DISPATCH_URL ?? "").trim().replace(/\/$/, "");
+const SWARM_KEY = process.env.SWARM_KEY ?? "";
+
+function detectAdvertiseUrl(): string {
+  if (process.env.ADVERTISE_URL) return process.env.ADVERTISE_URL.replace(/\/$/, "");
+  // Prefer the tailscale address (100.64.0.0/10) — reachable from every swarm
+  // machine regardless of LAN; fall back to the first non-internal IPv4.
+  const addrs = Object.values(networkInterfaces())
+    .flat()
+    .filter((a) => a && a.family === "IPv4" && !a.internal) as { address: string }[];
+  const ts = addrs.find((a) => a.address.startsWith("100."));
+  const ip = (ts ?? addrs[0])?.address ?? "localhost";
+  return `http://${ip}:${PORT}`;
+}
+
+if (HUB_URL && SWARM_KEY) {
+  const advertise = detectAdvertiseUrl();
+  let lastOk: boolean | null = null;
+  const register = async () => {
+    try {
+      const res = await fetch(`${HUB_URL}/nodes/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-swarm-key": SWARM_KEY },
+        body: JSON.stringify({ url: advertise }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const ok = res.ok;
+      if (ok !== lastOk) {
+        console.log(
+          ok
+            ? `registered with hub ${HUB_URL} as ${advertise}`
+            : `hub rejected registration (HTTP ${res.status}): ${await res.text().catch(() => "")}`
+        );
+        lastOk = ok;
+      }
+    } catch (e) {
+      if (lastOk !== false) {
+        console.log(`hub unreachable for registration: ${e instanceof Error ? e.message : e}`);
+        lastOk = false;
+      }
+    }
+  };
+  void register();
+  setInterval(register, 60_000).unref();
+} else {
+  console.log("node discovery off (set DISPATCH_URL + SWARM_KEY in services/.env to join a hub)");
+}

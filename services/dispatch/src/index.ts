@@ -15,6 +15,7 @@ import {
   waitForJob,
   queueStats,
   setExecutor,
+  setNodeCount,
   type Backend,
   type Job,
   type JobPreferences,
@@ -22,14 +23,39 @@ import {
 } from "./queue.ts";
 
 const PORT = Number(process.env.PORT ?? 8877);
-// Compute pool: every node in COMPUTE_URLS (comma-separated — localhost,
-// LAN IPs, tailscale hostnames) contributes to total capacity. Jobs
-// round-robin across nodes and fail over to the next node automatically.
+// Compute pool: static COMPUTE_URLS (comma-separated) plus nodes that
+// self-register via POST /nodes/register (shared-secret protected, heartbeat
+// every ~60s, expired after REGISTER_TTL_MS of silence). Jobs round-robin
+// across the live pool and fail over to the next node automatically.
 const COMPUTE_URLS = (process.env.COMPUTE_URLS ?? process.env.COMPUTE_URL ?? "http://localhost:8878")
   .split(",")
   .map((u) => u.trim().replace(/\/$/, ""))
   .filter(Boolean);
+const SWARM_KEY = process.env.SWARM_KEY ?? "";
+const REGISTER_TTL_MS = 150_000;
 const WAIT_TIMEOUT_S = Number(process.env.WAIT_TIMEOUT_S ?? 60);
+
+const registered = new Map<string, number>(); // node url -> lastSeen ms
+
+function poolNodes(): string[] {
+  const now = Date.now();
+  const dynamic = [...registered.entries()]
+    .filter(([, seen]) => now - seen < REGISTER_TTL_MS)
+    .map(([url]) => url);
+  return [...new Set([...COMPUTE_URLS, ...dynamic])];
+}
+
+// Sweep expired registrations so concurrency shrinks with the pool.
+setInterval(() => {
+  const now = Date.now();
+  for (const [url, seen] of registered) {
+    if (now - seen >= REGISTER_TTL_MS) {
+      registered.delete(url);
+      console.log(`node expired: ${url}`);
+    }
+  }
+  setNodeCount(poolNodes().length);
+}, 30_000).unref();
 
 const COMPUTE_PATHS: Record<JobType, string> = {
   chat: "/v1/chat/completions",
@@ -42,11 +68,12 @@ let nodeRR = 0;
 setExecutor(async (job: Job, backend: Backend) => {
   const path = COMPUTE_PATHS[job.type];
   const payload = job.type === "chat" ? { ...job.payload, model: backend } : job.payload;
-  const start = nodeRR++ % COMPUTE_URLS.length;
+  const nodes = poolNodes();
+  const start = nodeRR++ % nodes.length;
   const nodeErrors: string[] = [];
 
-  for (let i = 0; i < COMPUTE_URLS.length; i++) {
-    const node = COMPUTE_URLS[(start + i) % COMPUTE_URLS.length];
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[(start + i) % nodes.length];
     let res: Response;
     try {
       res = await fetch(`${node}${path}`, {
@@ -81,12 +108,13 @@ app.use("*", cors());
 
 app.get("/health", async (c) => {
   const nodes = await Promise.all(
-    COMPUTE_URLS.map(async (node) => {
+    poolNodes().map(async (node) => {
+      const source = COMPUTE_URLS.includes(node) ? "static" : "registered";
       try {
         const res = await fetch(`${node}/health`, { signal: AbortSignal.timeout(2_000) });
-        return { node, ...(await res.json() as object) };
+        return { node, source, ...(await res.json() as object) };
       } catch {
-        return { node, ok: false, error: "unreachable" };
+        return { node, source, ok: false, error: "unreachable" };
       }
     })
   );
@@ -99,6 +127,38 @@ app.get("/health", async (c) => {
     compute: healthy[0] ?? nodes[0] ?? null,
     nodes,
   });
+});
+
+// Node discovery: compute nodes announce themselves (and heartbeat) here.
+// Requires the shared SWARM_KEY; the hub verifies it can actually reach the
+// node's /health before admitting it to the pool.
+app.post("/nodes/register", async (c) => {
+  if (!SWARM_KEY) {
+    return c.json({ error: "registration disabled — set SWARM_KEY on the hub" }, 403);
+  }
+  if (c.req.header("x-swarm-key") !== SWARM_KEY) {
+    return c.json({ error: "bad swarm key" }, 403);
+  }
+  const body = (await c.req.json().catch(() => null)) as { url?: string } | null;
+  const url = body?.url?.trim().replace(/\/$/, "");
+  if (!url || !/^https?:\/\//.test(url)) {
+    return c.json({ error: "url (http[s]://host:port) is required" }, 400);
+  }
+  try {
+    const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(4_000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  } catch (e) {
+    return c.json(
+      { error: `hub cannot reach ${url}/health — ${e instanceof Error ? e.message : e}` },
+      400
+    );
+  }
+  if (!registered.has(url) && !COMPUTE_URLS.includes(url)) {
+    console.log(`node registered: ${url}`);
+  }
+  registered.set(url, Date.now());
+  setNodeCount(poolNodes().length);
+  return c.json({ ok: true, pool: poolNodes() });
 });
 
 function publicView(job: Job) {

@@ -205,6 +205,17 @@ hermes concurrency scales with pool size automatically (one local model per
 node). Nodes can be heterogeneous — a node without an Anthropic key simply
 503s claude jobs and dispatch routes them to a node that has one.
 
+**Node discovery (preferred over hand-editing COMPUTE_URLS):** compute nodes
+self-register. On the hub, set `SWARM_KEY=<random hex>` in `services/.env`
+(enables `POST /nodes/register`; requests must present the key, and the hub
+verifies it can reach the node's `/health` before admitting it). On each
+worker, set `DISPATCH_URL=http://<hub>:8877` and the same `SWARM_KEY` — the
+compute service announces its own address (preferring its tailscale 100.x IP,
+overridable via `ADVERTISE_URL`), heartbeats every 60s, and the hub expires
+silent nodes after ~150s. So laptops join the pool by coming online and leave
+it by shutting their lid — no hub edits, no dispatch restarts. `/health`
+labels each node `static` or `registered`.
+
 ## Web front end (`chat-web/`) — Cloudflare Worker
 
 A public chat UI + API deployed to Cloudflare Workers (scaffolded with

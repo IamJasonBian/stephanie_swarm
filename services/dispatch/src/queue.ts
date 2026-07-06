@@ -31,17 +31,24 @@ export interface Job {
 const RESULT_TTL_MS = 60 * 60 * 1000;
 
 // Concurrency scales with pool size: each compute node can run one local
-// hermes at a time, so N nodes ⇒ N parallel hermes slots by default.
+// hermes at a time, so N nodes ⇒ N parallel hermes slots. The pool is dynamic
+// (nodes self-register), so index.ts calls setNodeCount() as it changes.
+const HERMES_PER_NODE = Number(process.env.HERMES_CONCURRENCY ?? 1);
 const NODE_COUNT = Math.max(
   1,
   (process.env.COMPUTE_URLS ?? process.env.COMPUTE_URL ?? "x").split(",").filter((s) => s.trim()).length
 );
 
 const limits: Record<Backend, number> = {
-  hermes: Number(process.env.HERMES_CONCURRENCY ?? 1) * NODE_COUNT,
+  hermes: HERMES_PER_NODE * NODE_COUNT,
   claude: Number(process.env.CLAUDE_CONCURRENCY ?? 4),
   kimi: Number(process.env.KIMI_CONCURRENCY ?? 4),
 };
+
+export function setNodeCount(n: number): void {
+  limits.hermes = HERMES_PER_NODE * Math.max(1, n);
+  void pump(); // new capacity may unblock queued jobs
+}
 const running: Record<Backend, number> = { hermes: 0, claude: 0, kimi: 0 };
 
 const jobs = new Map<string, Job>();
