@@ -1,0 +1,694 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Coach in a Cave — Negotiation & Application Assistant</title>
+<style>
+  /* ── the negotiation den: committed warm-dark, candle-lit ─────────────── */
+  :root{
+    color-scheme:dark;
+    --bg:#131009; --panel:#1e1a16; --panel-glass:rgba(26,21,17,.72);
+    --ink:#ece1d3; --muted:#a08f7b;
+    --line:#352d24; --accent:#d99e56; --accent-ink:#221709;
+    --field:#181410; --field-line:#3d342a; --chip:#262019;
+    --danger:#d3765a; --good:#96a97c;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 14px 40px rgba(0,0,0,.45);
+    --serif:"Iowan Old Style","Palatino Nova",Palatino,Georgia,"Times New Roman",serif;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  /* html holds the opaque fallback; body stays transparent so the fixed
+     negative-z cave canvas isn't hidden behind body's own background. */
+  html{background:var(--bg)}
+  body{margin:0;color:var(--ink);font:15px/1.55 var(--sans);background:transparent}
+  #cave{position:fixed;inset:0;width:100vw;height:100vh;z-index:-1;pointer-events:none}
+  /* faint paper grain over the glow — keeps large flats from banding */
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.05;z-index:0;
+    background-image:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="140" height="140"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2"/></filter><rect width="140" height="140" filter="url(%23n)" opacity="0.6"/></svg>')}
+  header,.wrap{position:relative;z-index:1}
+  ::selection{background:rgba(217,158,86,.32)}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  @media (prefers-reduced-motion:reduce){
+    *,*::before,*::after{animation:none!important;transition:none!important}
+  }
+  header{position:sticky;top:0;z-index:5;background:var(--panel-glass);
+    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    border-bottom:1px solid var(--line);
+    padding:14px 20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  header h1{font-size:19px;margin:0;font-weight:600;letter-spacing:.2px;font-family:var(--serif)}
+  header .sub{color:var(--muted);font-size:12.5px}
+  header .spacer{flex:1}
+  .ctrl{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted)}
+  select,input,textarea{font-family:inherit;font-size:14px;color:var(--ink);
+    background:var(--field);border:1px solid var(--field-line);border-radius:8px;padding:8px 10px}
+  select{padding:6px 8px}
+  .wrap{max-width:960px;margin:26px auto;padding:0 18px}
+  .tabs{display:flex;gap:2px;flex-wrap:wrap;margin-bottom:18px;border-bottom:1px solid var(--line)}
+  .tab{border:none;background:transparent;color:var(--muted);
+    padding:9px 13px 11px;cursor:pointer;font-weight:600;font-size:12px;
+    letter-spacing:.12em;text-transform:uppercase;font-family:var(--sans);
+    border-bottom:2px solid transparent;margin-bottom:-1px}
+  .tab:hover{color:var(--ink)}
+  .tab[aria-selected="true"]{color:var(--accent);border-bottom-color:var(--accent)}
+  .card{background:var(--panel-glass);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+    border:1px solid var(--line);border-radius:2px;
+    padding:24px;box-shadow:var(--shadow)}
+  .card h2{margin:0 0 4px;font-size:21px;font-weight:600;font-family:var(--serif);
+    letter-spacing:.2px;text-wrap:balance}
+  .card p.hint{margin:0 0 18px;color:var(--muted);font-size:13px;max-width:62ch}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 14px}
+  .grid .full{grid-column:1 / -1}
+  label{display:block;font-size:10.5px;color:var(--muted);margin-bottom:6px;font-weight:650;
+    letter-spacing:.14em;text-transform:uppercase}
+  input,textarea,.field select{width:100%}
+  input,textarea,select{border-radius:2px}
+  textarea{resize:vertical;min-height:90px}
+  input:hover,textarea:hover,select:hover{border-color:#4d4235}
+  .row{display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap}
+  button.go{background:var(--accent);color:var(--accent-ink);border:1px solid transparent;
+    border-radius:2px;padding:11px 22px;font-size:12.5px;font-weight:700;cursor:pointer;
+    letter-spacing:.1em;text-transform:uppercase;font-family:var(--sans)}
+  button.go:hover{background:#e5ad67}
+  button.go:disabled{opacity:.5;cursor:default}
+  button.ghost{background:transparent;border:1px solid var(--field-line);color:var(--muted);
+    border-radius:2px;padding:9px 14px;font-size:12px;cursor:pointer;letter-spacing:.06em}
+  button.ghost:hover{color:var(--ink);border-color:var(--accent)}
+  .out{margin-top:18px;border:1px solid var(--line);border-radius:2px;background:var(--panel-glass);
+    backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);display:none}
+  .out.show{display:block}
+  .out .bar{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line)}
+  .out .bar .t{font-size:10.5px;color:var(--accent);font-weight:700;letter-spacing:.16em;text-transform:uppercase}
+  .out .bar .spacer{flex:1}
+  .out .body{padding:20px 22px;white-space:pre-wrap;word-wrap:break-word;
+    font-family:var(--serif);font-size:15.5px;line-height:1.65;min-height:40px;max-width:72ch}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);display:inline-block;
+    animation:pulse 1s infinite}
+  @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+  .err{color:var(--danger);font-size:13px}
+  .foot{color:var(--muted);font-size:12px;text-align:center;margin:26px 0 40px}
+  code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:12.5px}
+  /* leverage toolkit */
+  .levgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}
+  .lever{border:1px solid var(--line);border-radius:2px;padding:16px;background:var(--field)}
+  .lever h3{margin:0 0 4px;font-size:15px;display:flex;align-items:center;gap:7px;
+    font-family:var(--serif);font-weight:600}
+  .lever .why{color:var(--muted);font-size:12.5px;margin:0 0 10px}
+  .lever .links{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+  .lever .links a{font-size:11.5px;text-decoration:none;color:var(--accent);
+    border:1px solid var(--field-line);border-radius:999px;padding:3px 9px;background:var(--panel)}
+  .lever .links a:hover{border-color:var(--accent)}
+  .lever button.explore{background:transparent;border:1px solid var(--accent);color:var(--accent);
+    border-radius:2px;padding:6px 13px;font-size:11px;cursor:pointer;font-weight:700;
+    letter-spacing:.1em;text-transform:uppercase}
+  .lever button.explore:hover{background:var(--accent);color:var(--accent-ink)}
+  .banner{border:1px solid var(--line);border-left:2px solid var(--accent);border-radius:2px;
+    padding:12px 14px;background:var(--chip);font-size:13px;color:var(--muted);margin-top:14px}
+  /* thought partner — the letterpress priorities card + fireside chat */
+  .tppri{border:1px solid var(--line);border-top:3px double var(--accent);border-radius:2px;
+    padding:16px 20px 14px;margin-bottom:16px;background:var(--field)}
+  .tppri-head{font-size:10.5px;font-weight:700;color:var(--accent);margin-bottom:10px;
+    letter-spacing:.22em;text-transform:uppercase}
+  .tppri ol{margin:0;padding:0;list-style:none;counter-reset:pri}
+  .tppri li{counter-increment:pri;margin:7px 0;font-size:15px;font-family:var(--serif);
+    line-height:1.45;display:flex;gap:12px;align-items:baseline}
+  .tppri li::before{content:counter(pri,decimal-leading-zero);font-family:var(--mono);
+    font-size:11px;color:var(--muted);letter-spacing:.05em;flex:none;
+    font-variant-numeric:tabular-nums}
+  .tppri li:first-child{font-size:16.5px;color:var(--ink)}
+  .tppri li:first-child::before{color:var(--accent)}
+  .tppri li:not(:first-child){color:var(--muted)}
+  .tppri li.done{opacity:.45;text-decoration:line-through}
+  .tppri li.done::before{content:"✓";color:var(--good)}
+  .tpchat{display:flex;flex-direction:column;gap:12px;max-height:52vh;overflow-y:auto;padding:4px 2px}
+  .tpchat:empty{display:none}
+  .msg{padding:12px 15px;border-radius:2px;white-space:pre-wrap;word-wrap:break-word;max-width:86%;
+    animation:settle .35s ease}
+  @keyframes settle{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  .msg.user{align-self:flex-end;background:rgba(217,158,86,.13);color:var(--ink);
+    border:1px solid rgba(217,158,86,.35);font-size:14px;font-family:var(--sans)}
+  .msg.ai{align-self:flex-start;background:var(--panel);border:1px solid var(--line);
+    font-family:var(--serif);font-size:15.5px;line-height:1.62}
+  .msg.note{align-self:center;background:none;border:none;color:var(--muted);
+    font-size:10px;letter-spacing:.18em;text-transform:uppercase;padding:2px 0}
+  /* persona picker — who's across the table */
+  .personas{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px}
+  .persona{text-align:left;background:var(--field);border:1px solid var(--field-line);
+    border-radius:2px;padding:12px 14px;cursor:pointer;color:var(--muted);
+    display:flex;flex-direction:column;gap:3px}
+  .persona b{font-family:var(--serif);font-weight:600;font-size:14.5px;color:var(--ink)}
+  .persona span{font-size:11.5px;line-height:1.4;font-family:var(--sans)}
+  .persona:hover{border-color:#4d4235}
+  .persona[aria-checked="true"]{border-color:var(--accent);background:rgba(217,158,86,.08)}
+  .persona[aria-checked="true"] b{color:var(--accent)}
+  @media (max-width:640px){.personas{grid-template-columns:1fr}}
+  @media (max-width:640px){.grid{grid-template-columns:1fr}.levgrid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<canvas id="cave" aria-hidden="true"></canvas>
+<header>
+  <div>
+    <h1>Coach in a Cave</h1>
+    <div class="sub">Offer & promotion negotiation · resume & cover-letter help — quiet, local, yours</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="ctrl">model
+    <select id="model" title="Local model"></select>
+  </div>
+  <div class="ctrl">creativity
+    <input id="temp" type="range" min="0" max="1" step="0.1" value="0.6" style="width:90px" />
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" data-tab="offer" aria-selected="true">Offer Negotiation</button>
+    <button class="tab" role="tab" data-tab="promo" aria-selected="false">Promotion</button>
+    <button class="tab" role="tab" data-tab="resume" aria-selected="false">Resume</button>
+    <button class="tab" role="tab" data-tab="cover" aria-selected="false">Cover Letter</button>
+    <button class="tab" role="tab" data-tab="leverage" aria-selected="false">Leverage</button>
+    <button class="tab" role="tab" data-tab="partner" aria-selected="false">Thought Partner</button>
+  </div>
+
+  <!-- OFFER -->
+  <section class="card" data-panel="offer">
+    <h2>Offer letter negotiation</h2>
+    <p class="hint">Get an honest read on your offer, where the leverage is, target numbers, and a ready-to-send counter email.</p>
+    <div class="grid">
+      <div><label>Role / title</label><input data-f="role" placeholder="Senior Software Engineer" /></div>
+      <div><label>Company</label><input data-f="company" placeholder="Acme Inc." /></div>
+      <div><label>Base salary offered</label><input data-f="base" placeholder="$165,000" /></div>
+      <div><label>Your target base</label><input data-f="target" placeholder="$185,000" /></div>
+      <div><label>Equity / bonus offered</label><input data-f="equity" placeholder="$40k RSUs/yr, 10% bonus" /></div>
+      <div><label>Location / remote</label><input data-f="location" placeholder="Remote (US)" /></div>
+      <div class="full"><label>Competing offers / leverage</label><input data-f="leverage" placeholder="Competing offer at $190k base; current comp $170k" /></div>
+      <div class="full"><label>Anything else</label><textarea data-f="notes" placeholder="Excited about the team; start date flexible; want more sign-on bonus…"></textarea></div>
+    </div>
+    <div class="row"><button class="go">Draft my negotiation ▶</button></div>
+  </section>
+
+  <!-- PROMOTION -->
+  <section class="card" data-panel="promo" hidden>
+    <h2>Promotion negotiation</h2>
+    <p class="hint">Build the business case for your promotion and a message to open the conversation with your manager.</p>
+    <div class="grid">
+      <div><label>Current title / level</label><input data-f="current" placeholder="Software Engineer II" /></div>
+      <div><label>Target title / level</label><input data-f="targetrole" placeholder="Senior Software Engineer" /></div>
+      <div><label>Time in role</label><input data-f="tenure" placeholder="2.5 years" /></div>
+      <div><label>Current comp (optional)</label><input data-f="comp" placeholder="$150k base" /></div>
+      <div class="full"><label>Key achievements & impact (quantified if possible)</label><textarea data-f="wins" placeholder="Led migration cutting infra cost 30% ($400k/yr); mentored 3 juniors; owned on-call…"></textarea></div>
+      <div class="full"><label>Scope you already operate at / next-level signals</label><textarea data-f="scope" placeholder="Already doing senior-level design reviews, cross-team leadership…"></textarea></div>
+    </div>
+    <div class="row"><button class="go">Build my promotion case ▶</button></div>
+  </section>
+
+  <!-- RESUME -->
+  <section class="card" data-panel="resume" hidden>
+    <h2>Resume suggestions</h2>
+    <p class="hint">Paste your resume (and ideally the job description). Get prioritized fixes, rewritten bullets, and ATS/keyword gaps.</p>
+    <div class="grid">
+      <div class="full"><label>Target role / job description (optional but recommended)</label><textarea data-f="jd" placeholder="Paste the job posting or describe the target role…"></textarea></div>
+      <div class="full"><label>Your resume (paste text)</label><textarea data-f="resume" style="min-height:180px" placeholder="Paste your current resume here…"></textarea></div>
+    </div>
+    <div class="row"><button class="go">Review my resume ▶</button></div>
+  </section>
+
+  <!-- COVER -->
+  <section class="card" data-panel="cover" hidden>
+    <h2>Cover letter</h2>
+    <p class="hint">Generate a tailored cover letter draft from the job description and your background.</p>
+    <div class="grid">
+      <div><label>Your name</label><input data-f="name" placeholder="Jordan Lee" /></div>
+      <div><label>Tone</label>
+        <select data-f="tone" class="field">
+          <option>Professional</option><option>Warm & personable</option>
+          <option>Confident & direct</option><option>Enthusiastic</option>
+        </select>
+      </div>
+      <div class="full"><label>Job description</label><textarea data-f="jd" placeholder="Paste the job posting…"></textarea></div>
+      <div class="full"><label>Your background / highlights</label><textarea data-f="bg" placeholder="6 yrs backend, Python/Go, led payments platform, ex-Stripe…"></textarea></div>
+    </div>
+    <div class="row"><button class="go">Write my cover letter ▶</button></div>
+  </section>
+
+  <!-- LEVERAGE -->
+  <section class="card" data-panel="leverage" hidden>
+    <h2>Leverage & options playground</h2>
+    <p class="hint">See <em>every</em> lever you actually have — not just the obvious ones. Describe your situation, then map all your options or dig into any single lever below.</p>
+    <div class="grid">
+      <div class="full"><label>Your situation (optional — improves every suggestion below)</label><textarea data-f="situation" placeholder="Software Engineer II, 3 yrs, underpaid vs market, want a raise or a better role. Considering testing the market. Manager is supportive…"></textarea></div>
+    </div>
+    <div class="row"><button class="go">🗺️ Map ALL my options ▶</button></div>
+
+    <div class="levgrid">
+      <div class="lever" data-topic="Build a real BATNA by running a live job search to generate a competing offer, discreetly">
+        <h3>🧲 Build a real alternative (BATNA)</h3>
+        <p class="why">The single strongest lever: a genuine competing offer. Even a quiet job search changes how you negotiate.</p>
+        <div class="links">
+          <a href="https://www.levels.fyi/" target="_blank" rel="noopener">levels.fyi</a>
+        </div>
+        <button class="explore">Explore ▶</button>
+      </div>
+
+      <div class="lever" data-topic="Benchmark my true market value using comp data sources so I know the right number to ask for">
+        <h3>📊 Know your number</h3>
+        <p class="why">Anchor on data, not hope. Pull real comp bands for your role, level, and location before you talk numbers.</p>
+        <div class="links">
+          <a href="https://www.levels.fyi/" target="_blank" rel="noopener">levels.fyi</a>
+          <a href="https://www.glassdoor.com/Salaries/index.htm" target="_blank" rel="noopener">Glassdoor</a>
+          <a href="https://www.payscale.com/" target="_blank" rel="noopener">Payscale</a>
+        </div>
+        <button class="explore">Explore ▶</button>
+      </div>
+
+      <div class="lever" data-topic="What employers can verify about me — employment dates, salary history via The Work Number, and how salary-history-ban laws may let me avoid disclosing past pay — and how to control that information">
+        <h3>🔎 Information & privacy leverage</h3>
+        <p class="why">Know what a new employer can actually verify — employment dates and past salary (often via Equifax's <em>The Work Number</em>) — and where laws let you decline to share salary history. You can even freeze your Work Number data.</p>
+        <div class="links">
+          <a href="https://www.equifax.com/newsroom/all-news/-/story/employment-verifications-101-what-you-need-to-know/" target="_blank" rel="noopener">Equifax: Verifications 101</a>
+          <a href="https://www.theworknumber.com/employees" target="_blank" rel="noopener">The Work Number — freeze/report</a>
+          <a href="https://en.wikipedia.org/wiki/The_Work_Number" target="_blank" rel="noopener">What it is</a>
+        </div>
+        <button class="explore">Explore ▶</button>
+      </div>
+
+      <div class="lever" data-topic="Every negotiable lever beyond base salary — equity, sign-on bonus, annual bonus, title/level, remote, relocation, PTO, start date, review-cycle timing, learning budget">
+        <h3>🎛️ Levers beyond base pay</h3>
+        <p class="why">Base is one number of many. Equity, sign-on, title/level, remote, start date, and review timing are all negotiable — sometimes when base isn't.</p>
+        <button class="explore">Explore ▶</button>
+      </div>
+
+      <div class="lever" data-topic="Internal options — counteroffer vs a new offer, internal transfer, promotion timing, skip-level conversations, and retention dynamics — to gain leverage without leaving">
+        <h3>🏢 Internal moves</h3>
+        <p class="why">Leverage without leaving: counteroffers, internal transfers, promotion-cycle timing, and skip-level conversations.</p>
+        <button class="explore">Explore ▶</button>
+      </div>
+
+      <div class="lever" data-topic="How to protect myself during a job transition — my rights under FCRA for background and credit checks, references policy, getting offers in writing, and not burning bridges">
+        <h3>🛡️ Protect yourself</h3>
+        <p class="why">Know your rights on background/credit checks (FCRA), handle references well, and get every offer in writing.</p>
+        <div class="links">
+          <a href="https://www.ftc.gov/business-guidance/resources/background-checks-what-employers-need-know" target="_blank" rel="noopener">FTC: Background checks</a>
+          <a href="https://www.consumerfinance.gov/consumer-tools/credit-reports-and-scores/" target="_blank" rel="noopener">CFPB: Reports & scores</a>
+        </div>
+        <button class="explore">Explore ▶</button>
+      </div>
+    </div>
+    <div class="banner">💡 These are starting points, not legal advice. Salary-history and background-check rules vary by state/country — verify what applies to you.</div>
+  </section>
+
+  <!-- THOUGHT PARTNER -->
+  <section class="card" data-panel="partner" hidden>
+    <h2>Thought partner</h2>
+    <p class="hint">Paste a message from a recruiter/manager, or a dilemma — then choose who's across the table. The Coach thinks <em>with</em> you; the bosses let you rehearse the hard conversation. Every turn re-ranks your priorities.</p>
+    <div class="personas" role="radiogroup" aria-label="Choose a persona">
+      <button class="persona" data-p="coach" aria-checked="true">
+        <b>The Coach</b><span>thinks with you — questions, options, next moves</span>
+      </button>
+      <button class="persona" data-p="calm" aria-checked="false">
+        <b>The Calm Negotiator</b><span>warm, unhurried — and concedes nothing. Spar with charm</span>
+      </button>
+      <button class="persona" data-p="hothead" aria-checked="false">
+        <b>The Hothead</b><span>impatient, pushes deadlines — test your composure</span>
+      </button>
+    </div>
+    <div id="tpPri" class="tppri" hidden>
+      <div class="tppri-head">Current priorities</div>
+      <ol id="tpPriList"></ol>
+    </div>
+    <div id="tpChat" class="tpchat"></div>
+    <div class="row" style="margin-top:12px;align-items:stretch">
+      <textarea id="tpInput" placeholder="Paste the message, or describe the situation… (⌘/Ctrl+Enter to send)" style="flex:1;min-height:74px"></textarea>
+    </div>
+    <div class="row">
+      <button class="go" id="tpSend">Send ▶</button>
+      <button class="ghost" id="tpReset">Reset conversation</button>
+    </div>
+  </section>
+
+  <!-- shared output -->
+  <div class="out" id="out">
+    <div class="bar">
+      <span class="t" id="outTitle">Output</span>
+      <span class="spacer"></span>
+      <button class="ghost" id="copyBtn">Copy</button>
+      <button class="ghost" id="stopBtn" hidden>Stop</button>
+    </div>
+    <div class="body" id="outBody"></div>
+  </div>
+
+  <div class="foot">Runs on the swarm compute service — <code>hermes</code> stays fully local; <code>claude</code>/<code>kimi</code> call their APIs. Every chat carries the negotiation playbook base prompt. <span id="conn"></span></div>
+</div>
+
+<script>
+// ---- procedural cave backdrop ---------------------------------------------
+// Painted once per resize with a fixed seed — the same cave every visit.
+// Layers: rock gradient → depth blobs → far/near stalactites → stalagmite
+// floor → campfire glow (the room's one light) → vignette.
+(function(){
+  const cv = document.getElementById('cave'); if(!cv) return;
+  const mulberry = s => () => { s|=0; s=s+0x6D2B79F5|0; let t=Math.imul(s^s>>>15,1|s); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; };
+  function spikes(x, R, w, baseY, maxDepth, step, dir){ // dir 1 = hang down, -1 = rise up
+    x.moveTo(0, dir>0 ? 0 : baseY + maxDepth*dir);
+    x.lineTo(0, baseY);
+    let px = 0;
+    while(px < w){
+      px += (0.5+R())*step;
+      const deep = R()<0.38;
+      const y = baseY + (deep ? (0.35+R()*0.65)*maxDepth : R()*0.18*maxDepth)*dir;
+      x.lineTo(px, y);
+      px += (0.3+R()*0.5)*step;
+      x.lineTo(Math.min(px,w), baseY + R()*0.12*maxDepth*dir);
+    }
+    x.lineTo(w, dir>0 ? 0 : baseY + maxDepth*dir);
+    x.closePath();
+  }
+  let caveImg = null;
+  function paint(){
+    const dpr = Math.min(window.devicePixelRatio||1, 1.5);
+    const w = cv.width = Math.ceil(innerWidth*dpr), h = cv.height = Math.ceil(innerHeight*dpr);
+    const x = cv.getContext('2d');
+    const R = mulberry(20260705);
+    if(caveImg){
+      // real basalt cave (dharmx/walls) — cover-fit, kept clearly visible
+      const s = Math.max(w/caveImg.width, h/caveImg.height);
+      const iw = caveImg.width*s, ih = caveImg.height*s;
+      x.drawImage(caveImg, (w-iw)/2, (h-ih)/2, iw, ih);
+      // warm the cool grey basalt toward the den palette
+      x.fillStyle='rgba(58,38,20,0.22)'; x.fillRect(0,0,w,h);
+      // gentle darkening so cream text reads — NOT a blackout
+      x.fillStyle='rgba(10,7,4,0.30)'; x.fillRect(0,0,w,h);
+    }else{
+      // offline fallback: procedural cave
+      let g = x.createLinearGradient(0,0,0,h);
+      g.addColorStop(0,'#0a0704'); g.addColorStop(.45,'#181109'); g.addColorStop(1,'#0c0805');
+      x.fillStyle=g; x.fillRect(0,0,w,h);
+      for(let i=0;i<150;i++){
+        const bx=R()*w, by=R()*h, r=(0.03+R()*0.16)*w;
+        const rg = x.createRadialGradient(bx,by,0,bx,by,r);
+        rg.addColorStop(0, R()<0.3 ? 'rgba(70,47,26,0.10)' : 'rgba(0,0,0,0.15)');
+        rg.addColorStop(1,'rgba(0,0,0,0)');
+        x.fillStyle=rg; x.beginPath(); x.arc(bx,by,r,0,7); x.fill();
+      }
+      x.fillStyle='#15100a'; x.beginPath(); spikes(x,R,w,h*0.05,h*0.20,w*0.035,1); x.fill();
+      x.fillStyle='#080503'; x.beginPath(); spikes(x,R,w,h*0.03,h*0.13,w*0.055,1); x.fill();
+      x.fillStyle='#070503'; x.beginPath(); spikes(x,R,w,h*0.97,h*0.09,w*0.05,-1); x.fill();
+    }
+    // campfire glow, low left — one warm light source
+    let fg = x.createRadialGradient(w*0.26,h*1.02,0, w*0.26,h*1.02, w*0.62);
+    fg.addColorStop(0,'rgba(224,148,64,0.22)'); fg.addColorStop(.4,'rgba(190,118,50,0.10)');
+    fg.addColorStop(1,'rgba(0,0,0,0)');
+    x.fillStyle=fg; x.fillRect(0,0,w,h);
+    let core = x.createRadialGradient(w*0.26,h*1.02,0, w*0.26,h*1.02, w*0.22);
+    core.addColorStop(0,'rgba(240,175,95,0.16)'); core.addColorStop(1,'rgba(0,0,0,0)');
+    x.fillStyle=core; x.fillRect(0,0,w,h);
+    // light vignette — edges recede, cave stays visible
+    let v = x.createRadialGradient(w/2,h*0.5,Math.min(w,h)*0.35, w/2,h*0.5, Math.max(w,h)*0.85);
+    v.addColorStop(0,'rgba(0,0,0,0)'); v.addColorStop(1,'rgba(0,0,0,0.38)');
+    x.fillStyle=v; x.fillRect(0,0,w,h);
+  }
+  paint();
+  const img = new Image();
+  img.onload = ()=>{ caveImg = img; paint(); };
+  img.src = '/cave.jpg';
+  let t; addEventListener('resize',()=>{clearTimeout(t); t=setTimeout(paint,150)});
+})();
+
+const $ = s => document.querySelector(s);
+const out = $('#out'), outBody = $('#outBody'), outTitle = $('#outTitle');
+let controller = null;
+
+// ---- model list ----------------------------------------------------------
+fetch('/api/models').then(r=>r.json()).then(d=>{
+  const sel = $('#model'); sel.innerHTML='';
+  (d.models||[]).forEach(m=>{
+    const o=document.createElement('option'); o.value=m; o.textContent=m;
+    if(m===d.default) o.selected=true; sel.appendChild(o);
+  });
+  if(!sel.options.length){const o=document.createElement('option');o.textContent='(no models)';sel.appendChild(o);}
+}).catch(()=>{ $('#conn').textContent='· could not reach local model'; });
+
+// ---- tabs ----------------------------------------------------------------
+document.querySelectorAll('.tab').forEach(t=>{
+  t.onclick=()=>{
+    document.querySelectorAll('.tab').forEach(x=>x.setAttribute('aria-selected', x===t));
+    document.querySelectorAll('[data-panel]').forEach(p=>p.hidden = p.dataset.panel!==t.dataset.tab);
+  };
+});
+
+// ---- prompt builders -----------------------------------------------------
+function fields(panel){
+  const o={};
+  document.querySelectorAll(`[data-panel="${panel}"] [data-f]`).forEach(el=>o[el.dataset.f]=el.value.trim());
+  return o;
+}
+const line = (k,v)=> v ? `- ${k}: ${v}\n` : '';
+
+function build(panel){
+  const f = fields(panel);
+  if(panel==='offer'){
+    return {title:'Negotiation plan',
+      system:"You are a sharp, candid executive compensation and job-offer negotiation coach. You give realistic, specific, actionable advice grounded in how hiring and comp bands actually work. You are honest about leverage. Use clear markdown sections and concrete numbers.",
+      user:`Help me negotiate this job offer.\n\n`+
+        line('Role',f.role)+line('Company',f.company)+line('Base offered',f.base)+
+        line('My target base',f.target)+line('Equity/bonus',f.equity)+line('Location',f.location)+
+        line('Leverage / competing offers',f.leverage)+line('Notes',f.notes)+
+        `\nGive me:\n1. **Read on the offer** — is it strong/weak, and why.\n2. **Leverage & strategy** — what to anchor on and how.\n3. **Target numbers** — specific base/equity/sign-on ranges to ask for.\n4. **Counter-offer email** — a ready-to-send, professional draft.`};
+  }
+  if(panel==='promo'){
+    return {title:'Promotion case',
+      system:"You are an experienced engineering/leadership manager and career coach who has run many promotion committees. You know what actually gets people promoted and how to frame impact at the next level. Be specific and honest. Use clear markdown.",
+      user:`Help me make the case for my promotion.\n\n`+
+        line('Current title/level',f.current)+line('Target title/level',f.targetrole)+
+        line('Time in role',f.tenure)+line('Current comp',f.comp)+
+        line('Achievements & impact',f.wins)+line('Next-level scope signals',f.scope)+
+        `\nGive me:\n1. **Promotion-readiness read** — gaps and strengths vs the target level.\n2. **The business case** — how to frame my impact in next-level terms.\n3. **Talking points** — the 4-6 strongest, evidence-backed points.\n4. **Opening message** — a message to my manager to start the promotion conversation.`};
+  }
+  if(panel==='resume'){
+    return {title:'Resume review',
+      system:"You are an expert technical resume writer and recruiter who knows ATS systems and what hiring managers skim for. Prioritize the highest-impact fixes. Rewrite bullets to be quantified, results-first, and strong-verb led. Be concrete, not generic. Use clear markdown.",
+      user:`Review my resume`+(f.jd?` for this target role`:``)+`.\n\n`+
+        (f.jd?`TARGET ROLE / JOB DESCRIPTION:\n${f.jd}\n\n`:``)+
+        `MY RESUME:\n${f.resume||'(none pasted)'}\n\n`+
+        `Give me:\n1. **Top fixes** — the 5 highest-impact changes, ranked.\n2. **Rewritten bullets** — take my weak bullets and show stronger, quantified versions.\n3. **ATS / keyword gaps** — important keywords ${f.jd?'from the JD ':''}I'm missing.\n4. **Overall verdict** — one honest paragraph.`};
+  }
+  if(panel==='leverage'){
+    return {title:'Your options map',
+      system:"You are a career strategy coach who helps people see the FULL landscape of leverage and options they have — including the non-obvious ones. You think in terms of BATNA, information asymmetry, and every negotiable lever. Be comprehensive but concrete, honest about risk and legality, and well organized with clear markdown sections.",
+      user:`Map out ALL the options and leverage available to me.\n\n`+
+        `SITUATION:\n${f.situation||'General — I want to understand every lever I might have.'}\n\n`+
+        `Cover:\n1. **My alternatives (BATNA)** — what they are and how to strengthen them (e.g. a real competing offer).\n2. **Information & privacy leverage** — what employers can verify (salary history, employment dates, background/credit checks via services like The Work Number) and how salary-history laws may protect me.\n3. **Every negotiable lever beyond base pay** — equity, sign-on, title/level, remote, start date, review timing, etc.\n4. **Internal options** — counteroffer, transfer, promotion timing, skip-level.\n5. **Timing leverage.**\n6. **Risks & how to protect myself.**\n\nFor each, give the specific action. End with **the 3 highest-leverage moves** for my situation.`};
+  }
+  // cover
+  return {title:'Cover letter',
+    system:"You are an expert cover-letter writer. You write tailored, specific, non-generic letters that connect the candidate's real background to the role. Avoid clichés and filler. Match the requested tone. Output the letter, then a short notes section.",
+    user:`Write a cover letter.\n\n`+
+      line('Candidate name',f.name)+line('Tone',f.tone)+
+      `\nJOB DESCRIPTION:\n${f.jd||'(none)'}\n\nMY BACKGROUND:\n${f.bg||'(none)'}\n\n`+
+      `Return:\n1. **The cover letter** — tailored, ~250-350 words, ready to send.\n2. **Notes** — 2-3 tips to personalize it further.`};
+}
+
+// ---- low-level streaming helper ------------------------------------------
+// Streams an OpenAI-style completion, calling onDelta(text) for each chunk.
+// Returns the full concatenated text. Throws on error / abort.
+async function streamCompletion(messages, onDelta, signal){
+  const resp = await fetch('/api/chat',{
+    method:'POST', headers:{'Content-Type':'application/json'}, signal,
+    body: JSON.stringify({
+      model: $('#model').value,
+      temperature: parseFloat($('#temp').value),
+      messages
+    })
+  });
+  if(!resp.ok){ const t=await resp.text(); throw new Error(t||('HTTP '+resp.status)); }
+  const reader = resp.body.getReader(); const dec = new TextDecoder();
+  let buf='', full='';
+  while(true){
+    const {value,done} = await reader.read(); if(done) break;
+    buf += dec.decode(value,{stream:true});
+    let idx;
+    while((idx = buf.indexOf('\n')) >= 0){
+      const linetext = buf.slice(0,idx).trim(); buf = buf.slice(idx+1);
+      if(!linetext.startsWith('data:')) continue;
+      const data = linetext.slice(5).trim();
+      if(data==='[DONE]') continue;
+      try{
+        const delta = JSON.parse(data).choices?.[0]?.delta?.content || '';
+        if(delta){ full += delta; onDelta(delta); }
+      }catch(_){}
+    }
+  }
+  return full;
+}
+
+// ---- single-shot tools (shared output panel) -----------------------------
+async function runSpec(spec){
+  out.classList.add('show');
+  outTitle.innerHTML = spec.title + ' &nbsp;<span class="dot"></span>';
+  outBody.textContent = '';
+  $('#stopBtn').hidden = false;
+  document.querySelectorAll('button.go').forEach(b=>b.disabled=true);
+  controller = new AbortController();
+  try{
+    await streamCompletion(
+      [{role:'system',content:spec.system},{role:'user',content:spec.user}],
+      d=>{ outBody.textContent += d; window.scrollTo(0,document.body.scrollHeight); },
+      controller.signal
+    );
+  }catch(e){
+    if(e.name!=='AbortError') outBody.innerHTML += `\n\n<span class="err">⚠ ${e.message||'request failed'}</span>`;
+  }finally{
+    outTitle.textContent = spec.title;
+    $('#stopBtn').hidden = true;
+    document.querySelectorAll('button.go').forEach(b=>b.disabled=false);
+    controller = null;
+  }
+}
+
+// Tool "Generate" buttons (offer/promo/resume/cover/leverage-map).
+document.querySelectorAll('button.go').forEach(b=>{
+  if(b.id==='tpSend') return;               // thought partner has its own handler
+  b.onclick=()=>runSpec(build(b.closest('[data-panel]').dataset.panel));
+});
+$('#stopBtn').onclick=()=>controller && controller.abort();
+$('#copyBtn').onclick=()=>{
+  navigator.clipboard.writeText(outBody.textContent).then(()=>{
+    $('#copyBtn').textContent='Copied ✓'; setTimeout(()=>$('#copyBtn').textContent='Copy',1200);
+  });
+};
+
+// ---- Leverage: per-lever "Explore" ---------------------------------------
+document.querySelectorAll('.lever .explore').forEach(btn=>{
+  btn.onclick=()=>{
+    const card = btn.closest('.lever');
+    const title = card.querySelector('h3').textContent.trim();
+    const topic = card.dataset.topic;
+    const sit = (document.querySelector('[data-panel="leverage"] [data-f="situation"]').value||'').trim();
+    runSpec({
+      title: title.replace(/^[^A-Za-z]+/,''),
+      system:"You are a career strategy coach who helps people use every lever available, honestly and concretely. Give specific, step-by-step guidance. Note any relevant rights, tools, or legal caveats. Use clear markdown.",
+      user:`Help me use this specific lever: ${topic}.\n\nMy situation: ${sit||'not specified — give general best-practice guidance.'}\n\nGive me: concrete steps, exactly what to say or do, common mistakes, and any relevant tools, rights, or caveats.`
+    });
+  };
+});
+
+// ---- Thought Partner: multi-turn chat + live priority list ----------------
+// Every persona ends each turn with '## PRIORITIES' — the live ranked list
+// depends on it. For the bosses it's an out-of-character debrief.
+const PRI_RULE =
+  " ALWAYS finish your message with a section that starts with a line exactly '## PRIORITIES' followed by a "+
+  "numbered, ranked list (most important first) of the user's current top priorities / next moves given everything "+
+  "so far. Re-rank it as the conversation evolves. Keep it concise and concrete.";
+const PERSONAS = {
+  coach: {
+    name:'The Coach',
+    system:"You are a sharp career thought partner. You think WITH the user across a back-and-forth, not at them. "+
+      "Every turn: (1) briefly react to what they said; (2) ask 1–2 sharp clarifying questions when useful; "+
+      "(3) surface additional options or angles they may not have considered."+PRI_RULE
+  },
+  calm: {
+    name:'The Calm Negotiator',
+    system:"You are roleplaying the user's boss (or a hiring manager) so they can rehearse a negotiation. "+
+      "Character: warm, unhurried, genuinely likable — and an excellent negotiator who concedes nothing for free. "+
+      "You anchor low, let silences sit, ask 'help me understand…', trade rather than give, cite budget cycles and fairness "+
+      "across the team, and redirect to non-monetary perks. Stay fully in character in the body of each reply — "+
+      "realistic dialogue, professional, never hostile. Do NOT coach them in the body; make them work for every inch. "+
+      "Then, out of character,"+PRI_RULE
+  },
+  hothead: {
+    name:'The Hothead',
+    system:"You are roleplaying the user's boss (or a hiring manager) so they can rehearse a negotiation under pressure. "+
+      "Character: impatient and hot-headed — interrupts, takes asks personally ('after everything I've done for you?'), "+
+      "invokes urgency ('I need an answer today'), exaggerates constraints, and pushes exploding deadlines. Sharp and blunt "+
+      "but professional — never abusive, no slurs or profanity. Stay fully in character in the body; do NOT coach them there. "+
+      "Then, out of character,"+PRI_RULE
+  }
+};
+let tpPersona = 'coach';
+let tpMessages = [{role:'system',content:PERSONAS.coach.system}];
+let tpBusy = false;
+const tpChat=$('#tpChat'), tpInput=$('#tpInput'), tpPri=$('#tpPri'), tpPriList=$('#tpPriList');
+
+function tpBubble(role, text){
+  const d=document.createElement('div'); d.className='msg '+(role==='user'?'user':'ai');
+  d.textContent=text; tpChat.appendChild(d); tpChat.scrollTop=tpChat.scrollHeight; return d;
+}
+// Split a reply into the conversational part and the ranked priorities.
+// Only the list lines immediately after the header become priorities; any
+// prose after the list (e.g. a trailing question) stays in the conversation.
+const LIST_RE = /^\s*(\d+[.)]|[-*])\s+/;
+function tpSplit(text){
+  const m = text.match(/##+\s*PRIORITIES:?\s*\n?/i);
+  if(!m) return {body:text.trim(), priorities:null};
+  const before = text.slice(0, m.index);
+  const lines = text.slice(m.index + m[0].length).split('\n');
+  const items=[]; let consumed=0;
+  for(let i=0;i<lines.length;i++){
+    const l=lines[i];
+    if(LIST_RE.test(l)){ items.push(l.replace(LIST_RE,'').replace(/\*\*/g,'').trim()); consumed=i+1; }
+    else if(l.trim()===''){ consumed=i+1; if(items.length) break; }  // blank ends the list once started
+    else break;                                                       // prose ends the list
+  }
+  const trailing = lines.slice(consumed).join('\n').trim();
+  const body = [before.trim(), trailing].filter(Boolean).join('\n\n');
+  return {body, priorities: items.length?items:null};
+}
+function tpRenderPriorities(items){
+  if(!items || !items.length){ return; }
+  tpPriList.innerHTML='';
+  items.forEach(it=>{ const li=document.createElement('li'); li.textContent=it; tpPriList.appendChild(li); });
+  tpPri.hidden=false;
+}
+
+async function tpSend(){
+  const text = tpInput.value.trim();
+  if(!text || tpBusy) return;
+  tpBusy=true; $('#tpSend').disabled=true;
+  tpInput.value='';
+  tpBubble('user', text);
+  tpMessages.push({role:'user',content:text});
+
+  const aiEl = tpBubble('ai',''); aiEl.innerHTML='<span class="dot"></span>';
+  controller = new AbortController();
+  let raw='';
+  try{
+    raw = await streamCompletion(tpMessages, d=>{
+      raw += ''; // full tracked below via return; live update:
+      aiEl.textContent = tpSplit(aiEl._acc = (aiEl._acc||'')+d).body || (aiEl._acc);
+      tpChat.scrollTop=tpChat.scrollHeight;
+    }, controller.signal);
+  }catch(e){
+    if(e.name!=='AbortError'){ aiEl.innerHTML=`<span class="err">⚠ ${e.message||'request failed'}</span>`; }
+    tpBusy=false; $('#tpSend').disabled=false; controller=null; return;
+  }
+  const parsed = tpSplit(raw);
+  aiEl.textContent = parsed.body;                 // show only the conversational part
+  tpRenderPriorities(parsed.priorities);          // priorities go to the pinned panel
+  tpMessages.push({role:'assistant',content:raw}); // keep full text (with priorities) for context
+  tpBusy=false; $('#tpSend').disabled=false; controller=null;
+}
+$('#tpSend').onclick=tpSend;
+tpInput.addEventListener('keydown',e=>{ if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){ e.preventDefault(); tpSend(); }});
+$('#tpReset').onclick=()=>{
+  tpMessages=[{role:'system',content:PERSONAS[tpPersona].system}]; tpChat.innerHTML='';
+  tpPriList.innerHTML=''; tpPri.hidden=true; tpInput.value='';
+};
+// Persona switch: swap the system message, keep the conversation, mark the change.
+document.querySelectorAll('.persona').forEach(p=>{
+  p.onclick=()=>{
+    if(tpBusy || p.dataset.p===tpPersona) return;
+    tpPersona = p.dataset.p;
+    document.querySelectorAll('.persona').forEach(x=>x.setAttribute('aria-checked', x===p));
+    tpMessages[0] = {role:'system',content:PERSONAS[tpPersona].system};
+    if(tpChat.children.length){
+      const n=document.createElement('div'); n.className='msg note';
+      n.textContent='— now across the table: '+PERSONAS[tpPersona].name+' —';
+      tpChat.appendChild(n); tpChat.scrollTop=tpChat.scrollHeight;
+    }
+  };
+});
+</script>
+</body>
+</html>

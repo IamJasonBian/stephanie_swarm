@@ -1,0 +1,16 @@
+# deps / build
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+
+# machine-local secrets — never commit
+services/.env
+services/**/.env
+.env
+
+# runtime artifacts
+*.log
+nohup.out
+.wrangler/
+.dev.vars

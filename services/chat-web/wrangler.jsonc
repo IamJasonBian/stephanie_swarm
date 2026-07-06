@@ -1,0 +1,38 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hermes-chat",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-01",
+  "assets": {
+    "directory": "public",
+    "binding": "ASSETS"
+  },
+  // Durable memory: one SQLite-backed Durable Object per conversation.
+  // Strongly consistent, no TTL — history lives until explicitly deleted.
+  "durable_objects": {
+    "bindings": [
+      { "name": "CONVERSATIONS", "class_name": "Conversation" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Conversation"] }
+  ],
+  // Durable storage: D1 index of all conversations (listing, titles, counts).
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "swarm-chats",
+      "database_id": "484a4bb5-d95f-4398-8be8-33f43762180b"
+    }
+  ],
+  "vars": {
+    // Where the swarm's dispatch service is reachable FROM CLOUDFLARE.
+    // Currently the quick tunnel (ephemeral — changes if cloudflared
+    // restarts; swap for a named-tunnel hostname for a stable setup).
+    // For pure local dev, use "http://localhost:8877".
+    "DISPATCH_URL": "https://higher-them-earlier-staffing.trycloudflare.com"
+  },
+  "observability": {
+    "enabled": true
+  }
+}
