@@ -12,7 +12,28 @@ import { BackendUnavailable, type ChatRequest, type ChatMessage } from "./ollama
 
 const CLAUDE_BACKEND = process.env.CLAUDE_BACKEND ?? "api";
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL ?? "claude-sonnet-5";
+// Same pattern as claude-code-telegram: point CLAUDE_CONFIG_DIR at a specific
+// Claude account (e.g. /Users/<you>/.claude-stephanie2 for the shared bot
+// account); unset ⇒ the machine's default login.
+const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
 const DEFAULT_MAX_TOKENS = 1024;
+
+function cliEnv(): NodeJS.ProcessEnv {
+  return CLAUDE_CONFIG_DIR ? { ...process.env, CLAUDE_CONFIG_DIR } : process.env;
+}
+
+// Online-check for cli mode: `claude --version` proves the binary is present
+// and runnable without spending any model quota. Cached for a minute.
+let cliProbe: { ok: boolean; at: number } | null = null;
+function cliAvailable(): Promise<boolean> {
+  if (cliProbe && Date.now() - cliProbe.at < 60_000) return Promise.resolve(cliProbe.ok);
+  return new Promise((resolve) => {
+    execFile("claude", ["--version"], { timeout: 10_000, env: cliEnv() }, (err) => {
+      cliProbe = { ok: !err, at: Date.now() };
+      resolve(!err);
+    });
+  });
+}
 
 // Constructed lazily so a missing key only fails claude requests, not boot.
 let anthropic: Anthropic | null = null;
@@ -89,15 +110,22 @@ async function claudeViaApi(req: ChatRequest): Promise<unknown> {
 async function claudeViaCli(req: ChatRequest): Promise<unknown> {
   const { system, turns } = splitMessages(req.messages);
   const transcript = turns.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n\n");
-  const args = ["-p", "--output-format", "json"];
+  // Pin the model — otherwise the CLI uses the account's default (which may
+  // be a far more expensive tier than intended).
+  const args = ["-p", "--output-format", "json", "--model", CLAUDE_MODEL];
   if (system) args.push("--append-system-prompt", system);
   args.push(transcript);
 
   const stdout = await new Promise<string>((resolve, reject) => {
-    execFile("claude", args, { timeout: 300_000, maxBuffer: 10 * 1024 * 1024 }, (err, out, stderr) => {
-      if (err) reject(new BackendUnavailable("claude", `claude CLI: ${stderr || err.message}`.slice(0, 500)));
-      else resolve(out);
-    });
+    execFile(
+      "claude",
+      args,
+      { timeout: 300_000, maxBuffer: 10 * 1024 * 1024, env: cliEnv() },
+      (err, out, stderr) => {
+        if (err) reject(new BackendUnavailable("claude", `claude CLI: ${stderr || err.message}`.slice(0, 500)));
+        else resolve(out);
+      }
+    );
   });
 
   let result: string;
@@ -114,7 +142,8 @@ export async function claudeChat(req: ChatRequest): Promise<unknown> {
   return CLAUDE_BACKEND === "cli" ? claudeViaCli(req) : claudeViaApi(req);
 }
 
-export function claudeStatus(): { backend: string; ready: boolean; model: string } {
-  const ready = CLAUDE_BACKEND === "cli" ? true : Boolean(process.env.ANTHROPIC_API_KEY);
+export async function claudeStatus(): Promise<{ backend: string; ready: boolean; model: string }> {
+  const ready =
+    CLAUDE_BACKEND === "cli" ? await cliAvailable() : Boolean(process.env.ANTHROPIC_API_KEY);
   return { backend: CLAUDE_BACKEND, ready, model: CLAUDE_MODEL };
 }

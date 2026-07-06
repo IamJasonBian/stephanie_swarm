@@ -137,13 +137,89 @@ export default {
       }
     }
 
+    if (url.pathname === "/api/models" && request.method === "GET") {
+      // A model is online if ANY healthy compute node in the pool can serve
+      // it. Dispatch unreachable ⇒ everything reports offline.
+      const status: Record<string, boolean> = Object.fromEntries(MODELS.map((m) => [m, false]));
+      try {
+        const res = await fetch(`${env.DISPATCH_URL}/health`, {
+          signal: AbortSignal.timeout(5_000),
+        });
+        const health = (await res.json()) as {
+          nodes?: { ok?: boolean; backends?: Record<string, { reachable?: boolean; ready?: boolean }> }[];
+        };
+        for (const node of health.nodes ?? []) {
+          if (!node.ok || !node.backends) continue;
+          if (node.backends.hermes?.reachable) status.hermes = true;
+          if (node.backends.claude?.ready) status.claude = true;
+          if (node.backends.kimi?.ready) status.kimi = true;
+        }
+      } catch {
+        // leave everything offline
+      }
+      const firstOnline = MODELS.find((m) => status[m]);
+      return json({ models: MODELS, default: firstOnline ?? "hermes", status });
+    }
+
     if (url.pathname === "/api/chat" && request.method === "POST") {
       const body = (await request.json().catch(() => null)) as {
         conversationId?: string;
         message?: string;
         model?: string;
         fallback?: boolean;
+        // coach-style (Coach in a Cave UI): full OpenAI message array + SSE reply
+        messages?: { role: string; content: string }[];
+        temperature?: number;
       } | null;
+
+      // Coach in a Cave sends the whole conversation each turn (stateless —
+      // no Durable Object involved) and reads an SSE stream back.
+      if (Array.isArray(body?.messages)) {
+        const model = body.model && MODELS.includes(body.model) ? body.model : "hermes";
+        let dispatchRes: Response;
+        try {
+          dispatchRes = await fetch(`${env.DISPATCH_URL}/jobs?wait=true`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              type: "chat",
+              payload: {
+                messages: body.messages,
+                temperature: body.temperature ?? 0.6,
+                max_tokens: 2048,
+              },
+              preferences: { model, fallback: body.fallback ?? true },
+            }),
+            signal: AbortSignal.timeout(90_000),
+          });
+        } catch {
+          return json({ error: "dispatch unreachable — is the tunnel up?" }, 502);
+        }
+        const job = (await dispatchRes.json().catch(() => null)) as {
+          status?: string;
+          model?: string;
+          error?: string;
+          result?: { choices?: { message?: { content?: string } }[] };
+        } | null;
+        const reply = job?.result?.choices?.[0]?.message?.content;
+        if (!dispatchRes.ok || job?.status !== "done" || !reply) {
+          return json(
+            { error: job?.error ?? `job ${job?.status ?? "failed"} (HTTP ${dispatchRes.status})` },
+            502
+          );
+        }
+        // Dispatch is non-streaming: re-emit the reply as the SSE chunk
+        // stream the coach UI's reader expects (chunked by line so it types).
+        const pieces = reply.match(/[^\n]*\n|[^\n]+$/g) ?? [reply];
+        const sse =
+          pieces
+            .map((p) => `data: ${JSON.stringify({ choices: [{ delta: { content: p } }] })}\n\n`)
+            .join("") + "data: [DONE]\n\n";
+        return new Response(sse, {
+          headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+        });
+      }
+
       if (!body?.message?.trim()) {
         return json({ error: "message is required" }, 400);
       }

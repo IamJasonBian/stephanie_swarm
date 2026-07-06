@@ -83,16 +83,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, json.dumps({"error": "not found"}))
 
     def _models(self):
-        # compute's /v1/models lists the aliases: hermes | claude | kimi
+        # compute's /v1/models lists the aliases (hermes | claude | kimi) with
+        # per-model `online` flags — pass those through so the UI can grey out
+        # offline models.
         try:
             with urllib.request.urlopen(COMPUTE_URL + "/v1/models", timeout=5) as r:
                 data = json.loads(r.read())
-            names = [m.get("id") for m in data.get("data", []) if m.get("id")]
+            entries = [m for m in data.get("data", []) if m.get("id")]
+            names = [m["id"] for m in entries]
+            status = {m["id"]: bool(m.get("online", True)) for m in entries}
         except Exception:
-            names = []
+            names, status = [], {}
         if DEFAULT_MODEL not in names:
             names.insert(0, DEFAULT_MODEL)
-        self._send(200, json.dumps({"models": names, "default": DEFAULT_MODEL}))
+            status.setdefault(DEFAULT_MODEL, False)
+        default = next((n for n in names if status.get(n)), DEFAULT_MODEL)
+        self._send(200, json.dumps({"models": names, "default": default, "status": status}))
 
     def _chat(self):
         try:

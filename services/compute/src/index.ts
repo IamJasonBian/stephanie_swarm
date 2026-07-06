@@ -37,8 +37,11 @@ const app = new Hono();
 app.use("*", cors());
 
 app.get("/health", async (c) => {
-  const [hermes, converter] = await Promise.all([hermesHealthy(), converterReady()]);
-  const claude = claudeStatus();
+  const [hermes, converter, claude] = await Promise.all([
+    hermesHealthy(),
+    converterReady(),
+    claudeStatus(),
+  ]);
   const kimi = kimiStatus();
   const judge0 = Boolean(process.env.JUDGE0_URL);
   return c.json({
@@ -54,12 +57,18 @@ app.get("/health", async (c) => {
   });
 });
 
-app.get("/v1/models", (c) =>
-  c.json({
+app.get("/v1/models", async (c) => {
+  const [hermes, claude] = await Promise.all([hermesHealthy(), claudeStatus()]);
+  const online: Record<ModelAlias, boolean> = {
+    hermes,
+    claude: claude.ready,
+    kimi: kimiStatus().ready,
+  };
+  return c.json({
     object: "list",
-    data: MODELS.map((id) => ({ id, object: "model", owned_by: "hermes_swarm" })),
-  })
-);
+    data: MODELS.map((id) => ({ id, object: "model", owned_by: "hermes_swarm", online: online[id] })),
+  });
+});
 
 app.post("/v1/chat/completions", async (c) => {
   const body = (await c.req.json().catch(() => null)) as

@@ -151,7 +151,6 @@
 <header>
   <div>
     <h1>Coach in a Cave</h1>
-    <div class="sub">Offer & promotion negotiation · resume & cover-letter help — quiet, local, yours</div>
   </div>
   <div class="spacer"></div>
   <div class="ctrl">model
@@ -339,7 +338,7 @@
     <div class="body" id="outBody"></div>
   </div>
 
-  <div class="foot">Runs on the swarm compute service — <code>hermes</code> stays fully local; <code>claude</code>/<code>kimi</code> call their APIs. Every chat carries the negotiation playbook base prompt. <span id="conn"></span></div>
+  <div class="foot">Powered by penguin-llm workers — <code>hermes</code> stays fully local; <code>claude</code>/<code>kimi</code> call their APIs. Every chat carries the negotiation playbook base prompt. <span id="conn"></span></div>
 </div>
 
 <script>
@@ -423,11 +422,17 @@ let controller = null;
 // ---- model list ----------------------------------------------------------
 fetch('/api/models').then(r=>r.json()).then(d=>{
   const sel = $('#model'); sel.innerHTML='';
+  const status = d.status || {};
   (d.models||[]).forEach(m=>{
-    const o=document.createElement('option'); o.value=m; o.textContent=m;
-    if(m===d.default) o.selected=true; sel.appendChild(o);
+    const online = !(m in status) || status[m];
+    const o=document.createElement('option'); o.value=m;
+    o.textContent = online ? m : m + ' (offline)';
+    o.disabled = !online;
+    if(m===d.default && online) o.selected=true;
+    sel.appendChild(o);
   });
   if(!sel.options.length){const o=document.createElement('option');o.textContent='(no models)';sel.appendChild(o);}
+  if(sel.selectedOptions[0]?.disabled){const first=[...sel.options].find(o=>!o.disabled); if(first) first.selected=true;}
 }).catch(()=>{ $('#conn').textContent='· could not reach local model'; });
 
 // ---- tabs ----------------------------------------------------------------
