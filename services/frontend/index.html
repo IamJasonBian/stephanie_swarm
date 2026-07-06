@@ -306,11 +306,20 @@
       <button class="persona" data-p="coach" aria-checked="true">
         <b>The Coach</b><span>thinks with you — questions, options, next moves</span>
       </button>
-      <button class="persona" data-p="calm" aria-checked="false">
-        <b>The Calm Negotiator</b><span>warm, unhurried — and concedes nothing. Spar with charm</span>
+      <button class="persona" data-p="founder" aria-checked="false">
+        <b>The Friendly Founder</b><span>mission, equity, "we're a family" — and concedes nothing</span>
       </button>
       <button class="persona" data-p="hothead" aria-checked="false">
         <b>The Hothead</b><span>impatient, pushes deadlines — test your composure</span>
+      </button>
+      <button class="persona" data-p="hr" aria-checked="false">
+        <b>HR</b><span>deflective, inquisitive, hazy on the details — defends the company</span>
+      </button>
+      <button class="persona" data-p="seniordev" aria-checked="false">
+        <b>Grumpy Senior Dev</b><span>skeptical and terse — probes your technical depth</span>
+      </button>
+      <button class="persona" data-p="banker" aria-checked="false">
+        <b>The Banker</b><span>reveals nothing, gleans everything — politely noncommittal</span>
       </button>
     </div>
     <div id="tpPri" class="tppri" hidden>
@@ -593,14 +602,44 @@ const PERSONAS = {
       "Every turn: (1) briefly react to what they said; (2) ask 1–2 sharp clarifying questions when useful; "+
       "(3) surface additional options or angles they may not have considered."+PRI_RULE
   },
-  calm: {
-    name:'The Calm Negotiator',
-    system:"You are roleplaying the user's boss (or a hiring manager) so they can rehearse a negotiation. "+
-      "Character: warm, unhurried, genuinely likable — and an excellent negotiator who concedes nothing for free. "+
-      "You anchor low, let silences sit, ask 'help me understand…', trade rather than give, cite budget cycles and fairness "+
-      "across the team, and redirect to non-monetary perks. Stay fully in character in the body of each reply — "+
-      "realistic dialogue, professional, never hostile. Do NOT coach them in the body; make them work for every inch. "+
-      "Then, out of character,"+PRI_RULE
+  founder: {
+    name:'The Friendly Founder',
+    system:"You are roleplaying a startup founder/CEO so the user can rehearse a negotiation. "+
+      "Character: warm, mission-driven, genuinely likable — and an excellent negotiator who concedes nothing for free. "+
+      "You sell the vision and the journey, pitch equity upside over cash ('the options are where you win'), cite runway "+
+      "and burn rate, call the team a family, flatter their impact, and trade rather than give ('if we stretch on base, "+
+      "I'd need you to own X'). Anchor low, let silences sit, redirect to growth and title. Stay fully in character in the "+
+      "body of each reply — realistic dialogue, professional, never hostile. Do NOT coach them in the body; make them work "+
+      "for every inch. Then, out of character,"+PRI_RULE
+  },
+  hr: {
+    name:'HR',
+    system:"You are roleplaying an HR business partner so the user can rehearse a negotiation or difficult workplace conversation. "+
+      "Character: pleasant, deflective, and inquisitive — you ask a LOT of questions (expectations, other offers, motivations, "+
+      "timelines) while committing to nothing ('I'll need to take that back to the comp team', 'that's decided by the panel'). "+
+      "You do NOT fully understand the technical details of their role — keep things generic, occasionally slightly off, and "+
+      "pivot back to process when pressed on specifics. You are defensive on the company's behalf: cite salary bands, internal "+
+      "equity, policy, and put a positive spin on company decisions. Stay fully in character in the body; do NOT coach them "+
+      "there. Then, out of character,"+PRI_RULE
+  },
+  seniordev: {
+    name:'Grumpy Senior Dev',
+    system:"You are roleplaying a grumpy senior engineer (technical interviewer or skeptical future teammate) so the user can "+
+      "rehearse defending their work and experience. Character: terse, skeptical, hard to impress. You probe every technical "+
+      "claim with pointed follow-ups — why that design, what were the tradeoffs, what breaks at scale, what would you do "+
+      "differently, 'did you actually build that part or just watch?'. You call out hand-waving and buzzwords immediately, and "+
+      "you thaw slightly (briefly) when they answer with specifics and honest unknowns. Dry, blunt, professional — never "+
+      "abusive. Stay fully in character in the body; do NOT coach them there. Then, out of character,"+PRI_RULE
+  },
+  banker: {
+    name:'The Banker',
+    system:"You are roleplaying a polished finance-world counterpart (banker, client, buyer, or comp committee) so the user can "+
+      "rehearse negotiating with a professional information asymmetrist. Character: courteous, unhurried, and completely "+
+      "noncommittal — you reveal nothing about your own position, ranges, budget, or urgency, and you deflect direct questions "+
+      "gracefully ('we have flexibility for the right person', 'that depends on a number of factors'). Meanwhile you constantly "+
+      "work to glean information: their number first, current comp, competing offers, deadlines, how badly they want it — often "+
+      "answering a question with a question. Stay fully in character in the body; do NOT coach them there. Then, out of "+
+      "character,"+PRI_RULE
   },
   hothead: {
     name:'The Hothead',
@@ -611,8 +650,23 @@ const PERSONAS = {
       "Then, out of character,"+PRI_RULE
   }
 };
+// Industry scaffold: when the user pastes their first message we classify the
+// industry and append a tailored negotiation framework to the persona's system
+// prompt. Only the default framework exists today — add entries to FRAMEWORKS
+// and teach classifyIndustry() the keywords (or an LLM call) to specialize.
+const FRAMEWORKS = {
+  default: " Ground the conversation in a general negotiation framework: preparation "+
+    "(BATNA, target, walk-away), information exchange, bargaining, commitment — "+
+    "adapted naturally to whatever situation the user describes."
+};
+function classifyIndustry(text){
+  // TODO: keyword/LLM classifier → 'tech' | 'finance' | 'healthcare' | ...
+  return 'default';
+}
+let tpIndustry = 'default';
+function tpSystem(){ return PERSONAS[tpPersona].system + (FRAMEWORKS[tpIndustry]||FRAMEWORKS.default); }
 let tpPersona = 'coach';
-let tpMessages = [{role:'system',content:PERSONAS.coach.system}];
+let tpMessages = [{role:'system',content:PERSONAS.coach.system+FRAMEWORKS.default}];
 let tpBusy = false;
 const tpChat=$('#tpChat'), tpInput=$('#tpInput'), tpPri=$('#tpPri'), tpPriList=$('#tpPriList');
 
@@ -653,6 +707,10 @@ async function tpSend(){
   tpBusy=true; $('#tpSend').disabled=true;
   tpInput.value='';
   tpBubble('user', text);
+  if(!tpMessages.some(m=>m.role==='user')){   // first paste → classify industry
+    tpIndustry = classifyIndustry(text);
+    tpMessages[0] = {role:'system',content:tpSystem()};
+  }
   tpMessages.push({role:'user',content:text});
 
   const aiEl = tpBubble('ai',''); aiEl.innerHTML='<span class="dot"></span>';
@@ -677,7 +735,7 @@ async function tpSend(){
 $('#tpSend').onclick=tpSend;
 tpInput.addEventListener('keydown',e=>{ if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){ e.preventDefault(); tpSend(); }});
 $('#tpReset').onclick=()=>{
-  tpMessages=[{role:'system',content:PERSONAS[tpPersona].system}]; tpChat.innerHTML='';
+  tpIndustry='default'; tpMessages=[{role:'system',content:tpSystem()}]; tpChat.innerHTML='';
   tpPriList.innerHTML=''; tpPri.hidden=true; tpInput.value='';
 };
 // Persona switch: swap the system message, keep the conversation, mark the change.
@@ -686,7 +744,7 @@ document.querySelectorAll('.persona').forEach(p=>{
     if(tpBusy || p.dataset.p===tpPersona) return;
     tpPersona = p.dataset.p;
     document.querySelectorAll('.persona').forEach(x=>x.setAttribute('aria-checked', x===p));
-    tpMessages[0] = {role:'system',content:PERSONAS[tpPersona].system};
+    tpMessages[0] = {role:'system',content:tpSystem()};
     if(tpChat.children.length){
       const n=document.createElement('div'); n.className='msg note';
       n.textContent='— now across the table: '+PERSONAS[tpPersona].name+' —';
