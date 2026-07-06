@@ -1,6 +1,6 @@
 #!/bin/bash
 # Launch one swarm service under launchd (or by hand).
-# Usage: swarm-svc-launcher.sh <services-dir> <compute|dispatch|tunnel>
+# Usage: swarm-svc-launcher.sh <services-dir> <compute|dispatch|tunnel|frontend>
 #
 # Env files are sourced in order (later wins), so machine-local config
 # stays out of git:
@@ -25,6 +25,11 @@ case "$WHAT" in
     cd "$SERVICES_DIR/$WHAT"
     exec node src/index.ts
     ;;
+  frontend)
+    # Coach in a Cave UI (:8879) — proxies to compute.
+    cd "$SERVICES_DIR/frontend"
+    exec python3 server.py
+    ;;
   tunnel)
     # Named tunnel (stable hostname, same pattern as apollo/beta/alpha's
     # docker cloudflared) when TUNNEL_TOKEN is set; otherwise a quick tunnel —
@@ -36,7 +41,7 @@ case "$WHAT" in
     fi
     ;;
   *)
-    echo "unknown service: $WHAT (expected compute|dispatch|tunnel)" >&2
+    echo "unknown service: $WHAT (expected compute|dispatch|tunnel|frontend)" >&2
     exit 1
     ;;
 esac

@@ -68,7 +68,11 @@ else
   "$REPO_DIR/bin/swarm-svc-plists-install.sh" --only compute
 fi
 
-# 7. Verify + print pool line ----------------------------------------------
+# 7. recovery watchdog — re-probes every 5 min and bounces anything unhealthy
+echo "==> installing recovery watchdog"
+"$REPO_DIR/bin/swarm-svc-recover.sh" --install-watchdog
+
+# 8. Verify + print pool line ----------------------------------------------
 sleep 3
 "$REPO_DIR/bin/swarm-check.sh" || true
 

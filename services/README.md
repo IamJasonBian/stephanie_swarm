@@ -275,9 +275,20 @@ conventions:
   `OPENROUTER_API_KEY`, `TUNNEL_TOKEN`) then `services/<name>/.env`
   (per-service overrides) so machine-local config stays out of git.
 - `bin/swarm-svc-plists-install.sh` — writes + loads one LaunchAgent per
-  service (`com.$USER.swarm-svc.{compute,dispatch,tunnel}`). `RunAtLoad` picks
-  them up at login/boot, `KeepAlive` restarts crashes. Idempotent; flags:
+  service (`com.$USER.swarm-svc.{compute,dispatch,tunnel,frontend}`).
+  `RunAtLoad` picks them up at login/boot, `KeepAlive` restarts crashes.
+  Idempotent; flags: `--only <svc>` (e.g. worker nodes install just compute),
   `--no-load` (write only), `--uninstall`. Logs land in `services/<name>.log`.
+- `bin/swarm-svc-recover.sh` — **health-driven recovery**, catching what
+  KeepAlive can't: hung processes still holding their port, a wedged ollama,
+  a silently-dead cloudflared. Probes each service's health endpoint (tunnel:
+  process check; ollama: `/api/tags`) and `launchctl kickstart -k`s anything
+  unhealthy, then re-runs `swarm-check`. **Only manages services whose plist
+  is installed** — ad-hoc/nohup processes are dev mode and left alone, so on
+  a machine without plists it's a guaranteed no-op. Flags: `--dry-run`,
+  `--install-watchdog` (launchd timer running recovery every 5 min, logging
+  to `services/recovery.log`), `--uninstall-watchdog`.
+  `swarm-node-setup.sh` installs the watchdog automatically on new laptops.
 
 ```bash
 # take over from ad-hoc processes on this machine:
