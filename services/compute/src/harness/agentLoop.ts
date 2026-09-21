@@ -56,7 +56,7 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentResult> {
   // messages into a single leading one.
   const systemParts: string[] = [];
   if (o.profile.system_prompt) systemParts.push(o.profile.system_prompt);
-  for (const m of o.messages) if (m.role === "system" && m.content) systemParts.push(m.content);
+  for (const m of o.messages) if (m.role === "system" && typeof m.content === "string" && m.content) systemParts.push(m.content);
   const messages: ChatMessage[] = [{ role: "system", content: systemParts.join("\n\n") }];
   messages.push(...o.messages.filter((m) => m.role !== "system"));
 

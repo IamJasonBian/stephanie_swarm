@@ -345,13 +345,44 @@ bin/swarm-check.sh                               # qwen: ready · harness: enabl
 ```
 
 `telegram-penguin` is a zero-dependency bot that long-polls Telegram and sends
-each message to dispatch as an `agent` job (qwen + `web-readonly` ⇒ live web
+each message to dispatch as an `agent` job (qwen + a harness profile ⇒ live web
 search), falling back to plain chat if the harness is unavailable. It is
 default-deny on chats: set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_CHAT_IDS`
 in `services/.env` (rejected chat ids are logged so you can add them), then
-`bin/swarm-svc-plists-install.sh --only telegram`. Commands: `/new`, `/tools
-on|off`, `/status`. Unlike the claude-code-telegram bots it has no shell or
-filesystem access — only what the harness profile allows.
+`bin/swarm-svc-plists-install.sh --only telegram`. Unlike the
+claude-code-telegram bots it has no shell or filesystem access — only what the
+harness profile allows.
+
+It ships tuned as a **reimbursement / dispute advocate**
+(`config/harnesses/reimbursement-advocate.json`, override with
+`PENGUIN_PROFILE`): corporate expense policy (Rho/Brex/Ramp-style receipt
+thresholds, business purpose, submission windows), card chargebacks (Reg Z /
+Reg E windows, network reason codes, merchant-first documentation), bank fee
+and escalation ladders (executive office → CFPB/OCC/state AG), airline/hotel/
+rideshare refunds. Every reply follows intake → triage + deadlines → evidence →
+a ready-to-send message → escalation path, and anything uncertain is looked up
+with `web_search` and cited.
+
+- **Receipts and documents.** Photos (and image documents) go to the model as
+  images — qwen is a VLM, so it reads merchant/date/total/last-4 straight off
+  the receipt and flags what looks off (duplicate, tip math, FX fee). PDF/DOCX/
+  XLSX/HTML/CSV go through compute's docling converter (`documents[]` on the
+  agent route) when that venv exists. Only the latest image is kept in chat
+  context; images are never written to disk.
+- **Learning loop.** Every exchange is appended to
+  `services/telegram-penguin/data/turns.jsonl` (gitignored). When a case
+  resolves, `/outcome won|partial|lost <what worked or didn't>` records it in
+  `cases.jsonl`, and the recent outcomes are injected into every subsequent
+  prompt as a "Lessons from past cases" block — tactics that won get preferred,
+  ones that lost get flagged. `/lessons` shows the block. `turns.jsonl` is the
+  raw material for later evals/fine-tunes.
+- Commands: `/new`, `/outcome`, `/lessons`, `/tools on|off`, `/status`, `/help`.
+- Jobs are polled past dispatch's 60 s long-poll cap (`PENGUIN_JOB_TIMEOUT_MS`,
+  default 300 000) — a 27B model with a tool round typically takes 90–120 s.
+
+Only one process may long-poll a bot token: if the log shows `Conflict:
+terminated by other getUpdates request`, another instance (another machine, an
+old hookup) holds the same token and messages will split between them.
 
 ## Process pickup & scheduling (this machine and other instances)
 

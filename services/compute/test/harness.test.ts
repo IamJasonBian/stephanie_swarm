@@ -112,6 +112,33 @@ test("exactly one system message, at index 0, on every model call — including 
   }
 });
 
+test("multimodal user content (receipt image) passes through to the backend untouched", async () => {
+  const fake = await startFakeOpenAI("m", [{ text: "Blue Bottle, $40.24" }]);
+  const backend = new OpenAICompatibleBackend({ alias: "qwen", baseUrl: fake.url, model: "m" });
+  const parts = [
+    { type: "text" as const, text: "extract this receipt" },
+    { type: "image_url" as const, image_url: { url: "data:image/jpeg;base64,/9j/AAAA" } },
+  ];
+  try {
+    const r = await runAgent({
+      profile: profile(),
+      backend: "qwen",
+      chat: (x) => backend.chat(x),
+      mcp,
+      // A lessons/system message alongside an array-content user turn — the
+      // system merge must only pull string content and leave the parts alone.
+      messages: [{ role: "system", content: "Lessons from past cases: none" }, { role: "user", content: parts }],
+    });
+    assert.equal(r.completion.choices[0].message.content, "Blue Bottle, $40.24");
+    const msgs = (fake.requests[0] as { messages: { role: string; content: unknown }[] }).messages;
+    assert.equal(msgs.length, 2);
+    assert.match(msgs[0].content as string, /Lessons from past cases/);
+    assert.deepEqual(msgs[1].content, parts);
+  } finally {
+    await fake.close();
+  }
+});
+
 test("tool round trip: call → MCP → result fed back → final answer", async () => {
   const { res, fake } = await run([{ tool_calls: [{ name: "echo", arguments: { text: "ping" } }] }, { text: "done" }]);
   assert.equal(res.completion.choices[0].message.content, "done");

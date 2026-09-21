@@ -13,10 +13,16 @@ export interface ToolCall {
   function: { name: string; arguments: string };
 }
 
+// Multimodal user content (OpenAI shape). Vision-capable backends (qwen via
+// MLX) take image_url data URIs directly — receipts/statements as photos.
+export type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string; detail?: string } };
+
 export interface ChatMessage {
   role: string;
-  // null when an assistant turn is purely tool calls.
-  content: string | null;
+  // null when an assistant turn is purely tool calls; array for multimodal.
+  content: string | null | ContentPart[];
   tool_calls?: ToolCall[];
   // set on role:"tool" messages — which call this result answers.
   tool_call_id?: string;
@@ -39,6 +45,13 @@ export interface ChatRequest {
   seed?: number;
   tools?: ToolDefinition[];
   tool_choice?: "auto" | "none" | "required" | { type: "function"; function: { name: string } };
+}
+
+// Text-only view of a message's content (for backends without vision).
+export function contentText(content: ChatMessage["content"]): string {
+  if (typeof content === "string") return content;
+  if (!content) return "";
+  return content.map((p) => (p.type === "text" ? p.text : "[image]")).join("\n");
 }
 
 export class BackendUnavailable extends Error {

@@ -180,12 +180,25 @@ app.post("/v1/agent/completions", async (c) => {
         max_tokens?: number;
         top_p?: number;
         include_transcript?: boolean;
+        documents?: DocumentInput[];
       }
     | null;
   if (!body || !Array.isArray(body.messages) || body.messages.length === 0) {
     return c.json({ error: "messages array is required" }, 400);
   }
   if (typeof body.profile !== "string") return c.json({ error: "profile is required" }, 400);
+  // Same document-attachment contract as /v1/chat/completions: converted to
+  // markdown (docling) and prepended as reference context.
+  if (Array.isArray(body.documents) && body.documents.length > 0) {
+    try {
+      const converted = await Promise.all(body.documents.map(convertDocument));
+      const context = converted.map((d) => `Reference document "${d.name}":\n\n${d.markdown}`).join("\n\n---\n\n");
+      body.messages = [{ role: "user", content: context }, ...body.messages];
+    } catch (e) {
+      if (e instanceof BackendUnavailable) return c.json({ error: e.message }, 503);
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  }
   const profile = getProfile(body.profile);
   if (!profile) return c.json({ error: `unknown harness profile: ${body.profile}` }, 404);
 

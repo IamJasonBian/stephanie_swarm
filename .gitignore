@@ -11,6 +11,7 @@ services/**/.env
 
 # runtime artifacts
 *.log
+services/telegram-penguin/data/
 nohup.out
 .wrangler/
 .dev.vars
