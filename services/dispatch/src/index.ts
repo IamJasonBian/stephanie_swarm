@@ -8,8 +8,10 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
+import { timingSafeEqual } from "node:crypto";
 import {
   BACKENDS,
+  TOOL_CAPABLE,
   enqueue,
   getJob,
   waitForJob,
@@ -34,6 +36,17 @@ const COMPUTE_URLS = (process.env.COMPUTE_URLS ?? process.env.COMPUTE_URL ?? "ht
 const SWARM_KEY = process.env.SWARM_KEY ?? "";
 const REGISTER_TTL_MS = 150_000;
 const WAIT_TIMEOUT_S = Number(process.env.WAIT_TIMEOUT_S ?? 60);
+// Shared secret for `agent` jobs (server-side tool execution). Same value is
+// set on compute nodes; dispatch forwards it. Unset ⇒ agent jobs are refused.
+// Loopback is NOT a trust signal here: the cloudflared tunnel delivers public
+// traffic to localhost:8877.
+const HARNESS_TOKEN = process.env.HARNESS_TOKEN ?? "";
+function harnessAuthorized(header: string | undefined): boolean {
+  if (!HARNESS_TOKEN || !header) return false;
+  const a = Buffer.from(header);
+  const b = Buffer.from(HARNESS_TOKEN);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 const registered = new Map<string, number>(); // node url -> lastSeen ms
 
@@ -61,16 +74,20 @@ const COMPUTE_PATHS: Record<JobType, string> = {
   chat: "/v1/chat/completions",
   execute: "/v1/execute",
   convert: "/v1/convert",
+  agent: "/v1/agent/completions",
 };
 
 let nodeRR = 0;
 
 setExecutor(async (job: Job, backend: Backend) => {
   const path = COMPUTE_PATHS[job.type];
-  const payload = job.type === "chat" ? { ...job.payload, model: backend } : job.payload;
+  const usesModel = job.type === "chat" || job.type === "agent";
+  const payload = usesModel ? { ...job.payload, model: backend } : job.payload;
   const nodes = poolNodes();
   const start = nodeRR++ % nodes.length;
   const nodeErrors: string[] = [];
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (job.type === "agent") headers["x-harness-token"] = HARNESS_TOKEN;
 
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[(start + i) % nodes.length];
@@ -78,7 +95,7 @@ setExecutor(async (job: Job, backend: Backend) => {
     try {
       res = await fetch(`${node}${path}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(310_000),
       });
@@ -122,6 +139,7 @@ app.get("/health", async (c) => {
   return c.json({
     ok: healthy.length > 0,
     pool: { total: nodes.length, healthy: healthy.length },
+    harness: { enabled: Boolean(HARNESS_TOKEN) },
     queue: queueStats(),
     // First healthy node doubles as the legacy `compute` field for old clients.
     compute: healthy[0] ?? nodes[0] ?? null,
@@ -179,7 +197,7 @@ app.post("/jobs", async (c) => {
     | { type?: JobType; payload?: Record<string, unknown>; preferences?: JobPreferences }
     | null;
   if (!body || !body.type || !(body.type in COMPUTE_PATHS)) {
-    return c.json({ error: "type must be 'chat', 'execute', or 'convert'" }, 400);
+    return c.json({ error: "type must be 'chat', 'agent', 'execute', or 'convert'" }, 400);
   }
   if (!body.payload || typeof body.payload !== "object") {
     return c.json({ error: "payload object is required" }, 400);
@@ -187,6 +205,18 @@ app.post("/jobs", async (c) => {
   const prefs = body.preferences ?? {};
   if (prefs.model && !BACKENDS.includes(prefs.model)) {
     return c.json({ error: `preferences.model must be one of: ${BACKENDS.join(", ")}` }, 400);
+  }
+  if (body.type === "agent") {
+    if (!HARNESS_TOKEN) return c.json({ error: "agent jobs disabled — set HARNESS_TOKEN on the hub" }, 403);
+    if (!harnessAuthorized(c.req.header("x-harness-token"))) {
+      return c.json({ error: "agent jobs require a valid x-harness-token" }, 403);
+    }
+    if (typeof body.payload.profile !== "string") {
+      return c.json({ error: "agent payload needs a 'profile' name" }, 400);
+    }
+    if (prefs.model && !TOOL_CAPABLE.includes(prefs.model)) {
+      return c.json({ error: `agent jobs need a tool-capable model: ${TOOL_CAPABLE.join(", ")}` }, 400);
+    }
   }
 
   const job = enqueue(body.type, body.payload, prefs);

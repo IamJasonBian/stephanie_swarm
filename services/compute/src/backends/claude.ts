@@ -60,11 +60,11 @@ function openAiShape(text: string, finishReason: string, usage: { prompt_tokens:
 function splitMessages(messages: ChatMessage[]) {
   const system = messages
     .filter((m) => m.role === "system")
-    .map((m) => m.content)
+    .map((m) => m.content ?? "")
     .join("\n\n");
   const turns = messages
-    .filter((m) => m.role === "user" || m.role === "assistant")
-    .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+    .filter((m) => (m.role === "user" || m.role === "assistant") && m.content)
+    .map((m) => ({ role: m.role as "user" | "assistant", content: m.content as string }));
   return { system: system || undefined, turns };
 }
 

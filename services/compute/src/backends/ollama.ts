@@ -5,9 +5,28 @@
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
 const HERMES_MODEL = process.env.HERMES_MODEL ?? "hermes3:8b";
 
+// OpenAI-shaped tool call as emitted by tool-capable backends (qwen via MLX,
+// kimi). Carried through unchanged so a harness can execute it.
+export interface ToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
 export interface ChatMessage {
   role: string;
-  content: string;
+  // null when an assistant turn is purely tool calls.
+  content: string | null;
+  tool_calls?: ToolCall[];
+  // set on role:"tool" messages — which call this result answers.
+  tool_call_id?: string;
+  name?: string;
+}
+
+// OpenAI function-tool definition, passed through verbatim.
+export interface ToolDefinition {
+  type: "function";
+  function: { name: string; description?: string; parameters?: Record<string, unknown> };
 }
 
 export interface ChatRequest {
@@ -18,6 +37,8 @@ export interface ChatRequest {
   presence_penalty?: number;
   frequency_penalty?: number;
   seed?: number;
+  tools?: ToolDefinition[];
+  tool_choice?: "auto" | "none" | "required" | { type: "function"; function: { name: string } };
 }
 
 export class BackendUnavailable extends Error {

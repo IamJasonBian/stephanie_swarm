@@ -7,8 +7,13 @@
 # Usage:
 #   bin/swarm-svc-plists-install.sh                  install/reload all three (hub)
 #   bin/swarm-svc-plists-install.sh --only compute   worker node: just compute
+#   bin/swarm-svc-plists-install.sh --only mlx       local MLX model server (qwen)
+#   bin/swarm-svc-plists-install.sh --only telegram  penguin Telegram bot
 #   bin/swarm-svc-plists-install.sh --no-load        write plists only
 #   bin/swarm-svc-plists-install.sh --uninstall      boot out + remove plists
+#
+# mlx and telegram are opt-in (not in the default set): mlx needs a ~21 GB
+# model and Apple Silicon; telegram needs a bot token in services/.env.
 #
 # NOTE: if the services are already running ad-hoc (nohup/terminal), kill
 # them first or launchd will crash-loop on the busy ports:
@@ -23,8 +28,11 @@ UID_NUM="$(id -u)"
 MODE="${1:-}"
 SERVICES="compute dispatch tunnel frontend"
 if [ "$MODE" = "--only" ]; then
-  SERVICES="${2:?usage: --only <compute|dispatch|tunnel>}"
+  SERVICES="${2:?usage: --only <compute|dispatch|tunnel|frontend|mlx|telegram>}"
   MODE=""
+fi
+if [ "$MODE" = "--uninstall" ]; then
+  SERVICES="$SERVICES mlx telegram"   # remove opt-in ones too if present
 fi
 
 mkdir -p "$LA"
@@ -34,6 +42,7 @@ for what in $SERVICES; do
   plist="$LA/${label}.plist"
 
   if [ "$MODE" = "--uninstall" ]; then
+    [ -f "$plist" ] || continue
     launchctl bootout "gui/${UID_NUM}/${label}" 2>/dev/null || true
     rm -f "$plist"
     echo "removed $label"

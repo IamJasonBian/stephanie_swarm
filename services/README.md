@@ -1,17 +1,26 @@
 # services — job dispatch + general-purpose compute
 
 Two local HTTP services that give the UI and the Telegram bots a shared LLM
-source with three model options (**hermes** — free/local via Ollama, **claude**
-— Anthropic, **kimi** — Moonshot Kimi K2.6 via OpenRouter), plus a Judge0
-code-execution route that activates once Judge0 CE is running in Docker.
+source with four model options (**hermes** — free/local via Ollama, **qwen** —
+free/local via MLX, **claude** — Anthropic, **kimi** — Moonshot Kimi K2.6 via
+OpenRouter), an opt-in **harness** route that lets tool-capable models run a
+bounded MCP tool loop server-side, plus a Judge0 code-execution route that
+activates once Judge0 CE is running in Docker.
 
 ```
 UI / Telegram ──▶ dispatch :8877 (queue + broker) ──▶ compute :8878 ──▶ Ollama :11434 (hermes3:8b)
+                                                                    ├──▶ MLX :8321 (qwen — Qwen3.5-27B-6bit, loopback only)
                                                                     ├──▶ Anthropic API / claude CLI
                                                                     ├──▶ OpenRouter (kimi-k2.6, free tier by default)
+                                                                    ├──▶ harness ──▶ MCP servers (web-search, …)
                                                                     ├──▶ converter/ (docling, PDF/DOCX/image → markdown)
                                                                     └──▶ Judge0 CE :2358 (when configured)
 ```
+
+Design note: a **backend** answers one model call; the **harness** may call the
+backend repeatedly, execute allowlisted MCP tools, and feed results back. Plain
+`/v1/chat/completions` never executes tools — tool use is a separate, token-gated
+route. Full rationale and roadmap: `docs/local-harness-integration-plan.md`.
 
 Clients that don't need queueing can hit the compute service directly — its
 chat route is OpenAI-compatible, so any standard OpenAI client works by
@@ -42,12 +51,15 @@ uv pip install --python .venv/bin/python docling
 
 ### `POST /v1/chat/completions` — OpenAI-compatible chat
 
-`model` takes an alias: `"hermes"`, `"claude"`, or `"kimi"`. Non-streaming
-only (v1).
+`model` takes an alias: `"hermes"`, `"qwen"`, `"claude"`, or `"kimi"`.
+Non-streaming only (v1). OpenAI `tools` / `tool_choice` and
+`tool_calls` / `role:"tool"` messages pass through to tool-capable backends
+(`qwen`, `kimi`) — the route returns tool calls but does not execute them.
 
 | Alias | Backing model | Cost |
 |---|---|---|
 | `hermes` | `hermes3:8b` local via Ollama | free (local compute) |
+| `qwen` | `mlx-community/Qwen3.5-27B-6bit` local via `mlx_vlm.server` (Apple Silicon, ~21 GB, tool calling) — see `mlx/README.md` | free (local compute) |
 | `claude` | `claude-sonnet-5` via Anthropic API or `claude -p` CLI | API $3/$15 per MTok, or subscription via CLI |
 | `kimi` | `moonshotai/kimi-k2.6:free` via OpenRouter (1T-param MoE, 262K ctx) | free tier (rate-limited); paid `moonshotai/kimi-k2.6` ≈ $0.6/$3.4 per MTok. Too large to self-host. |
 
@@ -87,6 +99,43 @@ conversation reaches the model:
   "messages": [{"role": "user", "content": "Summarize the attached report."}]
 }
 ```
+
+### `POST /v1/agent/completions` — bounded MCP tool loop (harness)
+
+Explicit opt-in for server-side tool execution. Requires header
+`x-harness-token: $HARNESS_TOKEN` (503 if the node has no token, 403 if it
+doesn't match) and a `profile` from `config/harnesses/*.json`:
+
+```bash
+curl -s localhost:8878/v1/agent/completions -H 'Content-Type: application/json' \
+  -H "x-harness-token: $HARNESS_TOKEN" -d '{
+  "model": "qwen", "profile": "web-readonly",
+  "messages": [{"role": "user", "content": "What is the current Node.js LTS? Cite the URL."}]
+}'
+```
+
+Response is a chat-completion object plus `harness: {request_id, profile,
+backend, tool_calls, rounds, elapsed_ms, stopped_by, tools_used}`. The loop
+ends on the first of: final text answer · `max_tool_rounds` · wall-clock
+`timeout_ms` · an identical repeated call · total tool-output budget. When a
+limit trips, one last call is made with tools disabled so the caller always
+gets an answer. Per request the caller may *tighten* limits (`limits: {...}`)
+but never exceed the profile's.
+
+A **profile** declares: which MCP servers to spawn (stdio; only declared env
+vars reach the subprocess), a tool allowlist with `mutating` flags (mutating
+tools are refused in v1 — no confirmation channel yet), per-tool timeouts and
+output caps, allowed backends, and a system prompt. Paths use `${REPO_DIR}` /
+`${HOME}`. Unknown profile / server / tool ⇒ refused. `GET /v1/harness/profiles`
+lists what this node can run. Every tool call and denial is logged as one JSON
+line (request id, tool, duration, bytes, outcome — never arguments).
+
+Shipped profile: **`web-readonly`** — `web_search` via
+`mcp-servers/web-search` (build its venv with `mcp-servers/web-search/setup.sh`).
+
+Via dispatch: `type: "agent"`, same header, `payload.profile`; agent jobs
+never fall back to another backend (the profile pins the trust boundary), and
+`preferences.model` must be tool-capable (`qwen`, `kimi`).
 
 ### `POST /v1/convert` — document → markdown
 
@@ -129,6 +178,10 @@ Body matches `Judge0SubmitOptions`: `{ "sourceCode": "print(1)", "stdin": "",
 | `PORT` | `8878` | |
 | `OLLAMA_URL` | `http://localhost:11434` | |
 | `HERMES_MODEL` | `hermes3:8b` | any pulled Ollama model |
+| `MLX_URL` | `http://127.0.0.1:8321/v1` | local MLX server (qwen) |
+| `MLX_MODEL` | `mlx-community/Qwen3.5-27B-6bit` | must match what the MLX server loaded |
+| `HARNESS_TOKEN` | — | unset ⇒ `/v1/agent/completions` returns 503; same value on hub + nodes |
+| `HARNESS_DIR` | `config/harnesses` | profile directory |
 | `CLAUDE_BACKEND` | `api` | `api` (SDK + key) or `cli` (`claude -p`, subscription auth) |
 | `ANTHROPIC_API_KEY` | — | required for `CLAUDE_BACKEND=api` |
 | `CLAUDE_MODEL` | `claude-sonnet-5` | |
@@ -183,8 +236,10 @@ curl -s localhost:8877/jobs/<jobId>
 | `PORT` | `8877` |
 | `COMPUTE_URLS` | `http://localhost:8878` | comma-separated compute pool (`COMPUTE_URL` also accepted) |
 | `HERMES_CONCURRENCY` | `1` | per node — auto-multiplied by pool size |
+| `QWEN_CONCURRENCY` | `1` | per node — a 27B model is one inference at a time |
 | `CLAUDE_CONCURRENCY` | `4` |
 | `KIMI_CONCURRENCY` | `4` |
+| `HARNESS_TOKEN` | — | required on `agent` jobs (`x-harness-token`); forwarded to compute. Unset ⇒ agent jobs 403. Loopback is *not* trusted: the tunnel delivers public traffic to localhost. |
 | `WAIT_TIMEOUT_S` | `60` |
 
 ### Compute pool — multiple laptops, one service
@@ -275,6 +330,28 @@ cloudflared:
   route a hostname to `http://localhost:8877`, and put `TUNNEL_TOKEN=...` in
   `services/.env`. The launchd tunnel service (below) picks it up
   automatically. Set `DISPATCH_URL` to that hostname once and forget it.
+
+## Local MLX model (`mlx/`) and the penguin Telegram bot (`telegram-penguin/`)
+
+Both are opt-in launchd services (not in the default install set):
+
+```bash
+services/mlx/setup.sh --download                 # venv + Qwen3.5-27B-6bit (~21 GB, resumable)
+mcp-servers/web-search/setup.sh                  # web_search MCP venv
+openssl rand -hex 24                             # → HARNESS_TOKEN in services/.env (hub + nodes)
+bin/swarm-svc-plists-install.sh --only mlx
+launchctl kickstart -k gui/$(id -u)/com.$USER.swarm-svc.{compute,dispatch}   # pick up the token
+bin/swarm-check.sh                               # qwen: ready · harness: enabled — profiles: web-readonly
+```
+
+`telegram-penguin` is a zero-dependency bot that long-polls Telegram and sends
+each message to dispatch as an `agent` job (qwen + `web-readonly` ⇒ live web
+search), falling back to plain chat if the harness is unavailable. It is
+default-deny on chats: set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_CHAT_IDS`
+in `services/.env` (rejected chat ids are logged so you can add them), then
+`bin/swarm-svc-plists-install.sh --only telegram`. Commands: `/new`, `/tools
+on|off`, `/status`. Unlike the claude-code-telegram bots it has no shell or
+filesystem access — only what the harness profile allows.
 
 ## Process pickup & scheduling (this machine and other instances)
 
