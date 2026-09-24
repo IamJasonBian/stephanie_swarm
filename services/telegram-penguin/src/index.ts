@@ -1,5 +1,5 @@
 // telegram-penguin — a Telegram front door onto the swarm's local model,
-// tuned as a reimbursement / dispute advocate.
+// tuned as a universal get-money-back / reimbursement & dispute advocate.
 //
 // Long-polls the Bot API (no deps). Each message → dispatch as an `agent` job
 // (qwen + the reimbursement-advocate harness ⇒ live web search) or a plain
@@ -236,7 +236,7 @@ async function attachments(m: TgMessage): Promise<{ parts: ContentPart[]; docume
 }
 
 const DEFAULT_ATTACHMENT_PROMPT =
-  "Here is a receipt/statement/document. Extract merchant, date, total, currency, payment method and anything that looks off, then tell me my reimbursement or dispute options and the deadlines that matter.";
+  "Here is a receipt/statement/bill/EOB/screenshot. Extract merchant, date, total, currency, tax/tip/FX, payment method/last-4, key line items, and anything that looks off (duplicate, wrong amount, tip math, foreign fee, out-of-policy). Then rank my get-money-back options (merchant/platform → employer expense if corporate → card/bank dispute → regulator) with the deadlines that matter and one ready-to-send message for the best path.";
 
 // ---------------------------------------------------------------------------
 // Commands
@@ -252,16 +252,20 @@ async function handleCommand(chat: number, text: string): Promise<boolean> {
       await send(
         chat,
         [
-          "🐧 penguin — reimbursement & dispute advocate, running on a local model.",
+          "🐧 penguin — get-money-back advocate (local model).",
           "",
-          "Tell me what happened (amount, who, when, how you paid) or just send a photo of the receipt / statement / screenshot. PDFs and DOCX work too.",
+          "I cover: employer expenses · card/bank chargebacks · Amazon/PayPal/app-store · travel · medical/EOB · subscriptions · BNPL · warranties/price protection · shipping claims · deposits/utilities.",
           "",
-          on ? `Web search is ON (${PROFILE}) — I'll look up policies, deadlines and escalation paths and cite them.` : "Web search is off on this hub.",
+          "Tell me amount / who / when / how you paid, or send a receipt, statement, bill, EOB, or screenshot (PDF/DOCX too).",
           "",
-          "/new — start a fresh case",
-          "/outcome won|partial|lost <what happened> — teach me how a case ended",
-          "/lessons — what past cases taught this hub",
-          "/tools on|off — toggle web search for this chat",
+          on
+            ? `Web search ON (${PROFILE}) — policies, deadlines, escalation contacts, cited.`
+            : "Web search is off on this hub.",
+          "",
+          "/new — fresh case",
+          "/outcome won|partial|lost <what happened> — record how it ended",
+          "/lessons — past-case tactics",
+          "/tools on|off — toggle web search",
           "/status — hub health",
         ].join("\n")
       );

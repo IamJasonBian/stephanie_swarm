@@ -1,6 +1,6 @@
 #!/bin/bash
 # Launch one swarm service under launchd (or by hand).
-# Usage: swarm-svc-launcher.sh <services-dir> <compute|dispatch|tunnel|frontend|mlx|telegram>
+# Usage: swarm-svc-launcher.sh <services-dir> <compute|dispatch|tunnel|frontend|mlx|telegram|status-ui>
 #
 # Env files are sourced in order (later wins), so machine-local config
 # stays out of git:
@@ -52,7 +52,14 @@ case "$WHAT" in
       --model "${MLX_MODEL:-mlx-community/Qwen3.5-27B-6bit}" \
       --max-num-seqs "${MLX_MAX_SEQS:-1}" \
       --max-tokens "${MLX_MAX_TOKENS:-2048}" \
+      ${MLX_KV_BITS:+--kv-bits "$MLX_KV_BITS"} \
       --log-level "${MLX_LOG_LEVEL:-WARNING}"
+    ;;
+  status-ui)
+    # Model serve monitor (:8880, loopback) — live SSE throughput dashboard
+    # for the local model servers (MLX qwen, Ollama, Jev).
+    cd "$SERVICES_DIR"
+    exec python3 status-ui/server.py
     ;;
   telegram)
     # Penguin Telegram bot → dispatch (qwen + web-readonly harness).
@@ -60,7 +67,7 @@ case "$WHAT" in
     exec node src/index.ts
     ;;
   *)
-    echo "unknown service: $WHAT (expected compute|dispatch|tunnel|frontend|mlx|telegram)" >&2
+    echo "unknown service: $WHAT (expected compute|dispatch|tunnel|frontend|mlx|telegram|status-ui)" >&2
     exit 1
     ;;
 esac

@@ -9,6 +9,7 @@
 #   bin/swarm-svc-plists-install.sh --only compute   worker node: just compute
 #   bin/swarm-svc-plists-install.sh --only mlx       local MLX model server (qwen)
 #   bin/swarm-svc-plists-install.sh --only telegram  penguin Telegram bot
+#   bin/swarm-svc-plists-install.sh --only status-ui model serve monitor (:8880)
 #   bin/swarm-svc-plists-install.sh --no-load        write plists only
 #   bin/swarm-svc-plists-install.sh --uninstall      boot out + remove plists
 #
@@ -28,11 +29,11 @@ UID_NUM="$(id -u)"
 MODE="${1:-}"
 SERVICES="compute dispatch tunnel frontend"
 if [ "$MODE" = "--only" ]; then
-  SERVICES="${2:?usage: --only <compute|dispatch|tunnel|frontend|mlx|telegram>}"
+  SERVICES="${2:?usage: --only <compute|dispatch|tunnel|frontend|mlx|telegram|status-ui>}"
   MODE=""
 fi
 if [ "$MODE" = "--uninstall" ]; then
-  SERVICES="$SERVICES mlx telegram"   # remove opt-in ones too if present
+  SERVICES="$SERVICES mlx telegram status-ui"   # remove opt-in ones too if present
 fi
 
 mkdir -p "$LA"
