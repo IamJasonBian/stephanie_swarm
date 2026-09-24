@@ -1,6 +1,6 @@
 #!/bin/bash
 # Launch one swarm service under launchd (or by hand).
-# Usage: swarm-svc-launcher.sh <services-dir> <compute|dispatch|tunnel|frontend>
+# Usage: swarm-svc-launcher.sh <services-dir> <compute|dispatch|tunnel|frontend|mlx|telegram|status-ui>
 #
 # Env files are sourced in order (later wins), so machine-local config
 # stays out of git:
@@ -40,8 +40,34 @@ case "$WHAT" in
       exec cloudflared tunnel --url "http://localhost:${DISPATCH_PORT:-8877}"
     fi
     ;;
+  mlx)
+    # Local MLX model server (:8321, loopback only) — the `qwen` backend.
+    # services/mlx/setup.sh builds the venv; the model comes from the shared
+    # HF cache (downloaded on first start if missing).
+    PY="$SERVICES_DIR/mlx/.venv/bin/python"
+    [ -x "$PY" ] || { echo "mlx venv missing — run services/mlx/setup.sh" >&2; exit 1; }
+    exec "$PY" -m mlx_vlm.server \
+      --host 127.0.0.1 \
+      --port "${MLX_PORT:-8321}" \
+      --model "${MLX_MODEL:-mlx-community/Qwen3.5-27B-6bit}" \
+      --max-num-seqs "${MLX_MAX_SEQS:-1}" \
+      --max-tokens "${MLX_MAX_TOKENS:-2048}" \
+      ${MLX_KV_BITS:+--kv-bits "$MLX_KV_BITS"} \
+      --log-level "${MLX_LOG_LEVEL:-WARNING}"
+    ;;
+  status-ui)
+    # Model serve monitor (:8880, loopback) — live SSE throughput dashboard
+    # for the local model servers (MLX qwen, Ollama, Jev).
+    cd "$SERVICES_DIR"
+    exec python3 status-ui/server.py
+    ;;
+  telegram)
+    # Penguin Telegram bot → dispatch (qwen + web-readonly harness).
+    cd "$SERVICES_DIR/telegram-penguin"
+    exec node src/index.ts
+    ;;
   *)
-    echo "unknown service: $WHAT (expected compute|dispatch|tunnel|frontend)" >&2
+    echo "unknown service: $WHAT (expected compute|dispatch|tunnel|frontend|mlx|telegram|status-ui)" >&2
     exit 1
     ;;
 esac

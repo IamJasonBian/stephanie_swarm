@@ -31,8 +31,14 @@ import json,sys
 b=json.load(sys.stdin)['backends']
 print('    claude:', 'ready' if b['claude']['ready'] else 'no key (set ANTHROPIC_API_KEY or CLAUDE_BACKEND=cli)')
 print('    kimi:  ', 'ready' if b['kimi']['ready'] else 'no key (set OPENROUTER_API_KEY)')
+q=b.get('qwen',{})
+print('    qwen:  ', ('ready ('+q.get('model','?')+')') if q.get('ready') else 'not loaded (services/mlx/setup.sh; --only mlx)')
 print('    judge0:', 'configured' if b['judge0']['configured'] else 'not configured')
 print('    docling:', 'ready' if b['converter']['ready'] else 'missing venv')" 2>/dev/null
+  echo "$H" | python3 -c "
+import json,sys
+h=json.load(sys.stdin).get('harness',{})
+print('    harness:', ('enabled — profiles: '+', '.join(h.get('profiles',[]))) if h.get('enabled') else 'disabled (set HARNESS_TOKEN)')" 2>/dev/null
 else
   bad "compute $COMPUTE (not running here — fine for a non-worker machine)"
 fi

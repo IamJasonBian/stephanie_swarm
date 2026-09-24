@@ -8,7 +8,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { BackendUnavailable, type ChatRequest, type ChatMessage } from "./ollama.ts";
+import { BackendUnavailable, contentText, type ChatRequest, type ChatMessage } from "./ollama.ts";
 
 const CLAUDE_BACKEND = process.env.CLAUDE_BACKEND ?? "api";
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL ?? "claude-sonnet-5";
@@ -60,11 +60,11 @@ function openAiShape(text: string, finishReason: string, usage: { prompt_tokens:
 function splitMessages(messages: ChatMessage[]) {
   const system = messages
     .filter((m) => m.role === "system")
-    .map((m) => m.content)
+    .map((m) => contentText(m.content))
     .join("\n\n");
   const turns = messages
-    .filter((m) => m.role === "user" || m.role === "assistant")
-    .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+    .filter((m) => (m.role === "user" || m.role === "assistant") && contentText(m.content))
+    .map((m) => ({ role: m.role as "user" | "assistant", content: contentText(m.content) }));
   return { system: system || undefined, turns };
 }
 
