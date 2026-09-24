@@ -1,0 +1,34 @@
+[
+ {
+  "model": "qwen2.5-coder:7b",
+  "task": "django__django-11099",
+  "status": "Submitted",
+  "resolved": false,
+  "calls": 5,
+  "patch_chars": 0
+ },
+ {
+  "model": "qwen2.5-coder:7b",
+  "task": "pallets__flask-4045",
+  "status": "LimitsExceeded",
+  "resolved": false,
+  "calls": 40,
+  "patch_chars": 0
+ },
+ {
+  "model": "qwen2.5-coder:7b",
+  "task": "psf__requests-2317",
+  "status": "LimitsExceeded",
+  "resolved": false,
+  "calls": 40,
+  "patch_chars": 0
+ },
+ {
+  "model": "qwen2.5-coder:7b",
+  "task": "sympy__sympy-20590",
+  "status": "LimitsExceeded",
+  "resolved": false,
+  "calls": 40,
+  "patch_chars": 0
+ }
+]
