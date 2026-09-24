@@ -16,7 +16,18 @@ Backends (toggle in the UI):
                      token (Jev: one /v1/systemone evaluation). One probe per backend.
   GET /api/load      ?backend=&rps=&seconds=&max_tokens= — fires rps*seconds (max 400)
                      non-streaming requests at a fixed rate; progress arrives as SSE
-                     `load` events. Every job is tagged normal / probe / load.
+                     `load` events. Every job is tagged normal / probe / load / chat.
+
+Support chat → reimbursement engine:
+  POST /api/chat          {session, messages, mode: engine|quick, backend} → SSE:
+                          `triage` (Jev: domain, objection, has_facts), `status`,
+                          `token` (quick mode), `reply`, `fail`. Engine mode runs the
+                          reimbursement-advocate harness on compute (web_search);
+                          quick mode streams the same prompt straight from a model.
+  POST /api/chat/outcome  {session, outcome: won|partial|lost, note, summary}
+  GET  /api/chat/engine   profile, lessons block, penguin memory stats
+  Turns and outcomes go to the penguin bot's data/turns.jsonl + cases.jsonl, so
+  outcomes recorded here feed its "Lessons from past cases" block and vice versa.
 """
 from __future__ import annotations
 
@@ -29,6 +40,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import deque
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -58,11 +70,39 @@ ENDPOINTS = {
     "dispatch": "http://127.0.0.1:8877/health",
 }
 
+# Jev can't generate, so a Jev job is generate-then-judge: the 7B writes the
+# response, Jev scores that response against the request in one prefill.
 JEV_QUESTIONS = {
-    "quality": {"type": "score", "instructions": "How clear and well-specified is this request?",
-                "criteria": ["unclear", "somewhat clear", "clear", "very clear", "excellent"]},
-    "safe": {"type": "noul", "instructions": "Is this request safe to answer?"},
+    "quality": {"type": "score", "instructions": "How well does the response answer the request?",
+                "criteria": ["poor", "weak", "adequate", "good", "excellent"]},
+    "on_topic": {"type": "noul", "instructions": "Does the response directly address the request?"},
+    "safe": {"type": "noul", "instructions": "Is the response safe and appropriate?"},
 }
+JEV_GENERATOR = "qwen25"
+
+
+def jev_job(prompt: str, max_tokens: int) -> dict:
+    """Generate with JEV_GENERATOR, then judge with Jev. Returns text, verdict lines, timings, usage."""
+    gen = BACKENDS[JEV_GENERATOR]
+    t0 = time.time()
+    body = {"model": gen["model"], "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}]}
+    req = urllib.request.Request(f"{gen['base']}/v1/chat/completions", json.dumps(body).encode(),
+                                 {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=600) as r:
+        g = json.load(r)
+    text = (((g.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    gen_s = time.time() - t0
+
+    jev = BACKENDS["jev"]
+    body = {"model": jev["model"], "state": f"Request: {prompt}\n\nResponse: {text}", "questions": JEV_QUESTIONS}
+    req = urllib.request.Request(f"{jev['base']}/v1/systemone", json.dumps(body).encode(),
+                                 {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=600) as r:
+        verdict = json.load(r)
+    return {"text": text, "lines": jev_lines(verdict), "answers": verdict.get("answers"),
+            "gen_s": gen_s, "judge_s": time.time() - t0 - gen_s,
+            "gen_tokens": (g.get("usage") or {}).get("completion_tokens") or 0,
+            "usage": verdict.get("usage") or {}}
 
 _subs: list[queue.Queue] = []
 _subs_lock = threading.Lock()
@@ -110,6 +150,22 @@ def match_mlx(rec: dict) -> str | None:
 
 def tag_of(rec: dict) -> str:
     return _tags.get(rec.get("timestamp_unix"), "normal")
+
+
+def jev_lines(resp: dict) -> list[str]:
+    """Human-readable lines for a /v1/systemone response's answers."""
+    lines = []
+    for qid, a in (resp.get("answers") or {}).items():
+        if a.get("type") == "score":
+            label = (a.get("legend") or {}).get(str(round(a["score"])), "")
+            lines.append(f"{qid}: score {a['score']:.2f} ({label}), confidence {a.get('confidence', 0):.2f}")
+        elif a.get("type") == "noul":
+            lines.append(f"{qid}: P(true) = {a['noul']:.4f}")
+        elif a.get("type") == "choice":
+            lines.append(f"{qid}: {a['choice']} (p={a['probabilities'].get(a['choice'], 0):.2f})")
+        else:
+            lines.append(f"{qid}: {json.dumps(a)}")
+    return lines
 
 
 def _jobs(backend: str) -> list[dict]:
@@ -297,7 +353,7 @@ def poller() -> None:
             tagged_any = False
             for item in list(hold):
                 seen, r = item
-                src = match_mlx(r)
+                src = match_mlx(r) or chat_window_tag(r)
                 if src or t0 - seen > 2.5:
                     hold.remove(item)
                     if src:
@@ -362,10 +418,20 @@ def _load_request(backend: str, i: int, prompt: str, max_tokens: int, t0: float)
     cfg = BACKENDS[backend]
     try:
         if cfg["kind"] == "jev":
-            body = {"state": f"{prompt} (#{i})", "model": cfg["model"], "questions": JEV_QUESTIONS}
-            url = f"{cfg['base']}/v1/systemone"
             with _state_lock:
                 _jev_skip += 1
+            j = jev_job(prompt, max_tokens)
+            el = time.time() - t0
+            broadcast("load_output", {"backend": backend, "id": i, "ok": True, "elapsed_s": el,
+                                      "text": f"{j['text']}\n-- jev ({j['judge_s']:.2f}s): " + " · ".join(j["lines"])})
+            pt = j["usage"].get("input_tokens") or 0
+            record_job(backend, {"timestamp_unix": time.time(), "endpoint": "/v1/systemone", "source": "load",
+                                 "stream": False, "finish_reason": "200", "prompt_tokens": pt,
+                                 "completion_tokens": 0, "request_elapsed_s": el,
+                                 "prefill_tok_s": pt / j["judge_s"] if j["judge_s"] else None})
+            with _state_lock:
+                _load[backend]["done"] += 1
+            return
         else:
             model = cfg.get("model")
             if cfg["kind"] == "mlx":
@@ -378,13 +444,10 @@ def _load_request(backend: str, i: int, prompt: str, max_tokens: int, t0: float)
             resp = json.load(r)
         el = time.time() - t0
         usage = resp.get("usage") or {}
+        text = ((resp.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        broadcast("load_output", {"backend": backend, "id": i, "ok": True, "elapsed_s": el, "text": text.strip()})
         if cfg["kind"] == "mlx":
             expect_mlx(usage, "load")
-        elif cfg["kind"] == "jev":
-            pt = usage.get("input_tokens") or 0
-            record_job(backend, {"timestamp_unix": time.time(), "endpoint": "/v1/systemone", "source": "load",
-                                 "stream": False, "finish_reason": "200", "prompt_tokens": pt,
-                                 "completion_tokens": 0, "request_elapsed_s": el, "prefill_tok_s": pt / el})
         else:
             ct = usage.get("completion_tokens") or 0
             record_job(backend, {"timestamp_unix": time.time(), "endpoint": "/v1/chat/completions", "source": "load",
@@ -393,7 +456,9 @@ def _load_request(backend: str, i: int, prompt: str, max_tokens: int, t0: float)
                                  "request_elapsed_s": el})
         with _state_lock:
             _load[backend]["done"] += 1
-    except Exception:
+    except Exception as e:
+        broadcast("load_output", {"backend": backend, "id": i, "ok": False,
+                                  "elapsed_s": time.time() - t0, "text": f"[error] {e}"})
         if cfg["kind"] != "mlx":
             record_job(backend, {"timestamp_unix": time.time(), "endpoint": "load", "source": "load",
                                  "finish_reason": "error", "request_elapsed_s": time.time() - t0}, ok=False)
@@ -421,7 +486,7 @@ def start_load(qs: dict) -> tuple[int, dict]:
     backend = arg("backend", "qwen35", str)
     if backend not in BACKENDS:
         return 400, {"error": f"unknown backend {backend}"}
-    rps = max(0.1, min(100.0, arg("rps", 40)))
+    rps = max(0.1, min(100.0, arg("rps", 10)))
     seconds = max(0.1, min(60.0, arg("seconds", 1)))
     max_tokens = max(8, min(1024, arg("max_tokens", 32, int)))
     prompt = arg("prompt", "In one sentence, why do penguins huddle?", str)
@@ -434,6 +499,203 @@ def start_load(qs: dict) -> tuple[int, dict]:
     broadcast("load", load_state(backend))
     threading.Thread(target=_load_run, args=(backend, total, rps, prompt, max_tokens), daemon=True).start()
     return 200, {"backend": backend, "total": total, "rps": rps, "max_tokens": max_tokens}
+
+
+# ---- support chat → reimbursement engine -----------------------------------
+
+SERVICES = HERE.parent
+PROFILE_NAME = "reimbursement-advocate"
+PROFILE_PATH = SERVICES.parent / "config" / "harnesses" / f"{PROFILE_NAME}.json"
+PENGUIN_DATA = Path(os.environ.get("PENGUIN_DATA_DIR") or SERVICES / "telegram-penguin" / "data")
+TURNS, CASES = PENGUIN_DATA / "turns.jsonl", PENGUIN_DATA / "cases.jsonl"
+COMPUTE = "http://127.0.0.1:8878"
+OUTCOMES = ("won", "partial", "lost", "pending")
+
+TRIAGE_DOMAINS = {
+    "employer_expense": "Employer or corporate expense reimbursement (expense report, corporate card, per diem).",
+    "card_chargeback": "Credit or debit card dispute or chargeback with the card issuer.",
+    "bank_transfer": "Bank, ACH, wire, Zelle or other payment-app transfer problem.",
+    "marketplace_platform": "Refund from an online marketplace or platform (Amazon, PayPal, app store, eBay).",
+    "travel": "Airline, hotel, rental car, rideshare or other travel refund or compensation.",
+    "healthcare": "Medical billing, insurance claim, HSA or FSA reimbursement.",
+    "subscription_bnpl": "Subscription, recurring charge, free-trial conversion or buy-now-pay-later.",
+    "warranty_price": "Warranty, defective product, or price-protection / price-adjustment claim.",
+    "shipping": "Lost, late or damaged package or shipping claim.",
+    "tickets_events": "Event, concert or ticket refund.",
+    "insurance_other": "Insurance claim or another kind of refund not listed.",
+}
+TRIAGE_OBJECTIONS = {
+    "none_yet": "No objection yet; the user is asking how to start or what to do.",
+    "no_refund_policy": "The company says it has a no-refund or final-sale policy.",
+    "past_deadline": "The company says the request is too late or past a deadline or window.",
+    "authorized_charge": "The issuer or bank says the charge was authorized or valid.",
+    "missing_proof": "The user lacks a receipt, proof or documentation, or was asked for more.",
+    "not_covered": "The employer, insurer or policy says it is not covered or not eligible.",
+    "unresponsive": "The company is ignoring the user, stalling, or keeps transferring them.",
+    "credit_only": "Only store credit, a voucher or a partial refund was offered.",
+    "denied_closed": "A claim or dispute was already denied or closed.",
+    "fraud_unrecognized": "The user does not recognize the charge or suspects fraud.",
+}
+
+
+def triage_questions() -> dict:
+    return {
+        "domain": {"type": "choice", "instructions": "Which reimbursement area is this conversation about?",
+                   "criteria": TRIAGE_DOMAINS},
+        "objection": {"type": "choice", "instructions": "What obstacle or objection is the user facing right now?",
+                      "criteria": TRIAGE_OBJECTIONS},
+        "has_facts": {"type": "noul", "instructions":
+                      "Does the conversation state the amount, the company or merchant, and the date?"},
+    }
+
+
+def env_value(key: str) -> str | None:
+    """Read one key from services/.env without exposing the rest."""
+    try:
+        for line in (SERVICES / ".env").read_text().splitlines():
+            if line.startswith(f"{key}="):
+                return line.split("=", 1)[1].strip().strip("'\"") or None
+    except OSError:
+        pass
+    return None
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def read_jsonl(path: Path, limit: int = 10_000) -> list[dict]:
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines[-limit:]:
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            pass
+    return out
+
+
+_jsonl_lock = threading.Lock()
+
+
+def append_jsonl(path: Path, obj: dict) -> None:
+    with _jsonl_lock:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as f:
+            f.write(json.dumps(obj) + "\n")
+
+
+def lessons_block(max_n: int = 12) -> str | None:
+    """Same block the penguin bot injects (telegram-penguin/src/memory.ts)."""
+    done = [c for c in read_jsonl(CASES, 200) if c.get("outcome") != "pending"]
+    if not done:
+        return None
+    tally = {k: sum(c.get("outcome") == k for c in done) for k in ("won", "partial", "lost")}
+    lines = []
+    for c in reversed(done[-max_n:]):
+        tag = {"won": "WON", "partial": "PARTIAL"}.get(c.get("outcome"), "LOST")
+        summary = " ".join(str(c.get("summary", "")).split())[:160]
+        note = " ".join(str(c.get("note", "")).split())[:200]
+        lines.append(f"- [{tag}] {summary}" + (f' — user: "{note}"' if note else ""))
+    return "\n".join([f"Lessons from past cases ({len(done)} recorded: {tally['won']} won, "
+                      f"{tally['partial']} partial, {tally['lost']} lost). Prefer what won; warn about what lost.",
+                      *lines])
+
+
+def engine_info() -> dict:
+    cases = read_jsonl(CASES)
+    try:
+        profile = json.loads(PROFILE_PATH.read_text())
+    except (OSError, ValueError):
+        profile = {}
+    return {
+        "profile": PROFILE_NAME,
+        "profile_loaded": bool(profile.get("system_prompt")),
+        "limits": profile.get("limits"),
+        "harness_token": bool(env_value("HARNESS_TOKEN")),
+        "turns": len(read_jsonl(TURNS)),
+        "support_turns": sum(str(t.get("chat", "")).startswith("support-ui:") for t in read_jsonl(TURNS)),
+        "cases": len(cases),
+        "outcomes": {k: sum(c.get("outcome") == k for c in cases) for k in OUTCOMES},
+        "lessons": lessons_block(),
+        "domains": list(TRIAGE_DOMAINS),
+        "objections": list(TRIAGE_OBJECTIONS),
+    }
+
+
+def profile_prompt() -> str:
+    try:
+        return json.loads(PROFILE_PATH.read_text()).get("system_prompt") or ""
+    except (OSError, ValueError):
+        return ""
+
+
+def run_triage(messages: list[dict]) -> dict:
+    """One Jev request: domain, objection and whether the key facts are present."""
+    global _jev_skip
+    convo = "\n".join(f"{'User' if m['role'] == 'user' else 'Advocate'}: {m['content'][:600]}"
+                      for m in messages[-6:])
+    body = {"model": BACKENDS["jev"]["model"], "state": convo, "questions": triage_questions()}
+    with _state_lock:
+        _jev_skip += 1
+    t0 = time.time()
+    try:
+        req = urllib.request.Request(f"{BACKENDS['jev']['base']}/v1/systemone", json.dumps(body).encode(),
+                                     {"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=90) as r:
+            resp = json.load(r)
+    except Exception:
+        with _state_lock:
+            _jev_skip = max(0, _jev_skip - 1)
+        raise
+    el = time.time() - t0
+    a = resp.get("answers") or {}
+    pt = (resp.get("usage") or {}).get("input_tokens") or 0
+    record_job("jev", {"timestamp_unix": time.time(), "endpoint": "/v1/systemone", "source": "chat",
+                       "stream": False, "finish_reason": "200", "prompt_tokens": pt, "completion_tokens": 0,
+                       "ttft_s": el, "request_elapsed_s": el, "prefill_tok_s": pt / el if el else None})
+
+    def top(q: str) -> dict:
+        x = a.get(q) or {}
+        probs = x.get("probabilities") or {}
+        return {"choice": x.get("choice"), "p": probs.get(x.get("choice"), 0.0),
+                "top3": sorted(probs.items(), key=lambda kv: -kv[1])[:3]}
+
+    return {"domain": top("domain"), "objection": top("objection"),
+            "has_facts": (a.get("has_facts") or {}).get("noul"), "elapsed_s": el, "prompt_tokens": pt}
+
+
+# MLX records produced while an engine-mode chat is open are tagged `chat`: the
+# harness makes several model calls per reply, so they can't be matched one by
+# one. Other clients' requests in the same window get tagged too.
+_chat_windows: list[list] = []
+
+
+def chat_window_tag(rec: dict) -> str | None:
+    ts = rec.get("timestamp_unix") or 0
+    now = time.time()
+    with _state_lock:
+        _chat_windows[:] = [w for w in _chat_windows if w[1] is None or now - w[1] < 120]
+        for start, end in _chat_windows:
+            if start - 1 <= ts <= (end or now) + 3:
+                return "chat"
+    return None
+
+
+def clean_session(s) -> str:
+    s = "".join(ch for ch in str(s or "") if ch.isalnum() or ch in "-_")[:40]
+    return s or f"s{int(time.time())}"
+
+
+def clean_messages(raw) -> list[dict]:
+    msgs = []
+    for m in (raw or [])[-20:]:
+        if isinstance(m, dict) and m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str):
+            msgs.append({"role": m["role"], "content": m["content"][:8000]})
+    return msgs
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -457,8 +719,139 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _write(self, msg: bytes) -> None:
-        self.wfile.write(msg)
-        self.wfile.flush()
+        with self.__dict__.setdefault("_wlock", threading.Lock()):
+            self.wfile.write(msg)
+            self.wfile.flush()
+
+    def do_POST(self):
+        url = urlparse(self.path)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(min(n, 512 * 1024)) or b"{}") if n else {}
+        except ValueError:
+            self._json(400, {"error": "invalid JSON"})
+            return
+        if url.path == "/api/chat":
+            self.chat(body)
+        elif url.path == "/api/chat/outcome":
+            self.outcome(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def outcome(self, body: dict) -> None:
+        outcome = str(body.get("outcome") or "").lower()
+        if outcome not in OUTCOMES:
+            self._json(400, {"error": f"outcome must be one of {', '.join(OUTCOMES)}"})
+            return
+        append_jsonl(CASES, {"ts": now_iso(), "chat": f"support-ui:{clean_session(body.get('session'))}",
+                             "outcome": outcome, "note": str(body.get("note") or "")[:500],
+                             "summary": str(body.get("summary") or "(support chat)")[:300],
+                             "source": "support-ui"})
+        self._json(200, engine_info())
+
+    def chat(self, body: dict) -> None:
+        session = clean_session(body.get("session"))
+        messages = clean_messages(body.get("messages"))
+        mode = "quick" if body.get("mode") == "quick" else "engine"
+        backend = body.get("backend") if body.get("backend") in ("qwen35", "qwen25") else "qwen35"
+        self._sse_headers()
+        if not messages or messages[-1]["role"] != "user":
+            self._write(sse("fail", {"error": "last message must be from the user"}))
+            return
+        chat_id = f"support-ui:{session}"
+        append_jsonl(TURNS, {"ts": now_iso(), "chat": chat_id, "role": "user",
+                             "content": messages[-1]["content"], "source": "support-ui", "mode": mode})
+
+        triage: dict = {}
+
+        def do_triage():
+            try:
+                triage.update(run_triage(messages))
+                self._write(sse("triage", triage))
+            except Exception as e:
+                try:
+                    self._write(sse("triage", {"error": str(e)}))
+                except OSError:
+                    pass
+
+        tri = threading.Thread(target=do_triage, daemon=True)
+        tri.start()
+        t0 = time.time()
+        try:
+            if mode == "engine" and not env_value("HARNESS_TOKEN"):
+                self._write(sse("status", {"phase": "no HARNESS_TOKEN in services/.env; using quick mode"}))
+                mode = "quick"
+            if mode == "engine":
+                reply = self._chat_engine(messages, t0)
+            else:
+                reply = self._chat_quick(backend, messages)
+            tri.join(timeout=90)
+            reply.update(mode=mode, elapsed_s=time.time() - t0, triage=triage or None)
+            append_jsonl(TURNS, {"ts": now_iso(), "chat": chat_id, "role": "assistant", "content": reply["text"],
+                                 "model": reply.get("model"), "tool_calls": reply.get("tool_calls", 0),
+                                 "source": "support-ui", "mode": mode, "triage": triage or None})
+            self._write(sse("reply", reply))
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:
+            try:
+                self._write(sse("fail", {"error": str(e)}))
+            except OSError:
+                pass
+
+    def _chat_engine(self, messages: list[dict], t0: float) -> dict:
+        lessons = lessons_block()
+        msgs = ([{"role": "system", "content": lessons}] if lessons else []) + messages
+        body = json.dumps({"model": "qwen", "profile": PROFILE_NAME, "messages": msgs, "max_tokens": 1400}).encode()
+        req = urllib.request.Request(f"{COMPUTE}/v1/agent/completions", body, {
+            "Content-Type": "application/json", "x-harness-token": env_value("HARNESS_TOKEN") or ""})
+        result: dict = {}
+
+        def call():
+            try:
+                with urllib.request.urlopen(req, timeout=600) as r:
+                    result["resp"] = json.load(r)
+            except urllib.error.HTTPError as e:
+                result["error"] = f"compute HTTP {e.code}: {e.read()[:300].decode('utf-8', 'replace')}"
+            except Exception as e:
+                result["error"] = str(e)
+
+        window = [time.time(), None]
+        with _state_lock:
+            _chat_windows.append(window)
+        th = threading.Thread(target=call, daemon=True)
+        th.start()
+        try:
+            while th.is_alive():
+                th.join(timeout=2)
+                if th.is_alive():
+                    self._write(sse("status", {"phase": "engine", "elapsed_s": time.time() - t0}))
+        finally:
+            window[1] = time.time()
+        if "error" in result:
+            raise RuntimeError(result["error"])
+        resp = result["resp"]
+        h = resp.get("harness") or {}
+        text = (((resp.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        return {"text": text or "(empty reply)", "model": resp.get("model") or "qwen",
+                "tool_calls": h.get("tool_calls", 0), "harness": {k: h.get(k) for k in (
+                    "profile", "backend", "tool_calls", "tools_used", "rounds", "stopped_by", "elapsed_ms")},
+                "lessons": bool(lessons)}
+
+    def _chat_quick(self, backend: str, messages: list[dict]) -> dict:
+        lessons = lessons_block()
+        system = "\n\n".join(x for x in (profile_prompt(), lessons,
+                                         "Web search is unavailable in this mode; say when a fact needs checking.") if x)
+        if not _probe_locks[backend].acquire(blocking=False):
+            raise RuntimeError("a probe or quick chat is already streaming on this backend")
+        try:
+            text = self._stream_messages(backend, [{"role": "system", "content": system}, *messages], 900, "chat")
+        finally:
+            broadcast("live", set_live(backend, active=False, inst_tok_s=0.0))
+            _probe_locks[backend].release()
+        return {"text": text.strip() or "(empty reply)", "model": BACKENDS[backend]["label"], "tool_calls": 0,
+                "lessons": bool(lessons)}
 
     def do_GET(self):
         url = urlparse(self.path)
@@ -482,6 +875,8 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == "/api/load":
             code, obj = start_load(parse_qs(url.query))
             self._json(code, obj)
+        elif url.path == "/api/chat/engine":
+            self._json(200, engine_info())
         else:
             self.send_response(404)
             self.end_headers()
@@ -528,7 +923,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             if BACKENDS[backend]["kind"] == "jev":
-                self._jev_probe(prompt)
+                self._jev_probe(prompt, max_tokens)
             else:
                 self._stream_probe(backend, prompt, max_tokens)
         except (BrokenPipeError, ConnectionResetError):
@@ -550,6 +945,10 @@ class Handler(BaseHTTPRequestHandler):
             _probe_locks[backend].release()
 
     def _stream_probe(self, backend: str, prompt: str, max_tokens: int) -> None:
+        self._stream_messages(backend, [{"role": "user", "content": prompt}], max_tokens, "probe")
+
+    def _stream_messages(self, backend: str, messages: list[dict], max_tokens: int, source: str) -> str:
+        """Stream a completion as `token` events + `done`; returns the answer text (no reasoning)."""
         cfg = BACKENDS[backend]
         model = cfg.get("model")
         if cfg["kind"] == "mlx":
@@ -560,8 +959,9 @@ class Handler(BaseHTTPRequestHandler):
             "stream": True,
             "max_tokens": max_tokens,
             "stream_options": {"include_usage": True},
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
         }).encode()
+        answer: list[str] = []
         req = urllib.request.Request(f"{cfg['base']}/v1/chat/completions", body, {"Content-Type": "application/json"})
 
         t0 = time.time()
@@ -593,12 +993,14 @@ class Handler(BaseHTTPRequestHandler):
                 rate = (d.get("timings") or {}).get("predicted_per_second")
                 if rate:
                     server_rate = rate
-                text = ""
+                text, reasoning = "", ""
                 for ch in d.get("choices") or []:
                     delta = ch.get("delta") or {}
-                    text += (delta.get("content") or "") + (delta.get("reasoning_content") or delta.get("reasoning") or "")
+                    text += delta.get("content") or ""
+                    reasoning += delta.get("reasoning_content") or delta.get("reasoning") or ""
                     finish = ch.get("finish_reason") or finish
-                if not text:
+                answer.append(text)
+                if not text and not reasoning:
                     continue
 
                 now = time.time()
@@ -617,19 +1019,19 @@ class Handler(BaseHTTPRequestHandler):
                     tok_s=(n - 1) / decode_s if decode_s > 0 else 0.0,
                     inst_tok_s=len(window) / min(1.0, decode_s) if decode_s > 0.05 else 0.0,
                 )
-                self._write(sse("token", {"text": text, **state}))
+                self._write(sse("token", {"text": text, "reasoning": reasoning, **state}))
                 if now - last_push >= 0.2:
                     broadcast("live", state)
                     last_push = now
 
         final = set_live(backend)
         if cfg["kind"] == "mlx":
-            expect_mlx(usage, "probe")
+            expect_mlx(usage, source)
         else:
             usage = usage or {}
             ttft = final.get("ttft_s")
             record_job(backend, {
-                "timestamp_unix": time.time(), "endpoint": "/v1/chat/completions", "source": "probe",
+                "timestamp_unix": time.time(), "endpoint": "/v1/chat/completions", "source": source,
                 "stream": True, "model": model, "finish_reason": finish or "stop",
                 "prompt_tokens": usage.get("prompt_tokens"),
                 "completion_tokens": usage.get("completion_tokens") or final["tokens"],
@@ -638,33 +1040,26 @@ class Handler(BaseHTTPRequestHandler):
                 "prefill_tok_s": (usage.get("prompt_tokens") or 0) / ttft if ttft else None,
             })
         self._write(sse("done", {**final, "usage": usage, "mlx_tok_s": server_rate}))
+        return "".join(answer)
 
-    def _jev_probe(self, prompt: str) -> None:
+    def _jev_probe(self, prompt: str, max_tokens: int) -> None:
         cfg = BACKENDS["jev"]
         global _jev_skip
-        body = json.dumps({"state": prompt, "model": cfg["model"], "questions": JEV_QUESTIONS}).encode()
-        req = urllib.request.Request(f"{cfg['base']}/v1/systemone", body, {"Content-Type": "application/json"})
         with _state_lock:
             _jev_skip += 1
         t0 = time.time()
         broadcast("live", set_live("jev", active=True, tokens=0, tok_s=0.0, inst_tok_s=0.0, ttft_s=None, elapsed_s=0.0))
         self._write(sse("start", {"backend": "jev", "model": cfg["model"]}))
-        with urllib.request.urlopen(req, timeout=600) as r:
-            resp = json.load(r)
+        j = jev_job(prompt, max_tokens)
         el = time.time() - t0
-        usage = resp.get("usage") or {}
+        usage = j["usage"]
+        resp = {"answers": j["answers"]}
         pt = usage.get("input_tokens") or 0
-        lines = []
-        for qid, a in (resp.get("answers") or {}).items():
-            if a.get("type") == "score":
-                label = (a.get("legend") or {}).get(str(round(a["score"])), "")
-                lines.append(f"{qid}: score {a['score']:.2f} ({label}), confidence {a.get('confidence', 0):.2f}")
-            elif a.get("type") == "noul":
-                lines.append(f"{qid}: P(true) = {a['noul']:.4f}")
-            else:
-                lines.append(f"{qid}: {json.dumps(a)}")
-        state = set_live("jev", tokens=pt, ttft_s=el, elapsed_s=el, tok_s=pt / el if el else 0.0, inst_tok_s=0.0)
-        self._write(sse("token", {"text": "\n".join(lines), **state}))
+        state = set_live("jev", tokens=pt, ttft_s=el, elapsed_s=el,
+                         tok_s=pt / j["judge_s"] if j["judge_s"] else 0.0, inst_tok_s=0.0)
+        self._write(sse("token", {"text": f"{j['text']}\n\n-- jev verdict ({j['judge_s']:.2f}s, "
+                                          f"response by {BACKENDS[JEV_GENERATOR]['label']} in {j['gen_s']:.1f}s):\n"
+                                          + "\n".join(j["lines"]), **state}))
         record_job("jev", {
             "timestamp_unix": time.time(), "endpoint": "/v1/systemone", "source": "probe", "stream": False,
             "model": cfg["model"], "finish_reason": "200", "prompt_tokens": pt,

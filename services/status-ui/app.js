@@ -57,11 +57,9 @@ function select(b) {
   $("backend-note").textContent = INFO[b].note;
   $("k-mode").textContent = INFO[b].mode;
   $("probe-target").textContent = (backends[b] && backends[b].label) || b;
-  $("max").style.display = jev ? "none" : "";
   $("lmax").parentElement.style.display = jev ? "none" : "";
-  $("go").textContent = jev ? "Probe (evaluate)" : "Probe (stream)";
-  const running = !!probes[b];
-  $("go").disabled = running; $("stop").disabled = !running;
+  const quickOpt = $("chat-mode").querySelector('option[value="quick"]');
+  quickOpt.textContent = `Quick (stream from ${b === "qwen25" ? "Qwen2.5" : "Qwen3.5"}, no tools)`;
   document.title = `${INFO[b].title} Serve`;
   renderEngine(); renderReqs(); renderLive(); drawLive();
 }
@@ -118,6 +116,13 @@ function connect() {
     S[b].load = l;
     if (b === cur) { renderLive(); renderLoad(); }
   });
+  es.addEventListener("load_output", (e) => {
+    const o = JSON.parse(e.data);
+    if (o.backend !== cur) return;
+    const text = (o.text || "(empty response)").replace(/\n/g, "\n    ");
+    $("out").textContent += `\n[#${o.id} · ${f(o.elapsed_s, 2)} s${o.ok ? "" : " · failed"}]\n    ${text}\n`;
+    $("out").scrollTop = $("out").scrollHeight;
+  });
   es.addEventListener("tick", (e) => {
     const d = JSON.parse(e.data);
     for (const b of IDS) {
@@ -149,47 +154,163 @@ function connect() {
   });
 }
 
-// ---- SSE: probe job --------------------------------------------------------
-function startProbe() {
-  const b = cur;
-  if (probes[b]) return;
-  const max = +$("max").value, prompt = $("prompt").value;
-  const q = new URLSearchParams({ backend: b, prompt, max_tokens: max });
-  $("out").textContent = ""; $("out").classList.remove("muted");
-  $("go").disabled = true; $("stop").disabled = false;
-  const es = new EventSource("/api/generate?" + q);
-  probes[b] = { es, prompt, max: b === "jev" ? 0 : max, submitted: Date.now() / 1000 };
-  const out = (text) => { if (cur === b) { $("out").textContent += text; $("out").scrollTop = $("out").scrollHeight; } };
-  es.addEventListener("token", (e) => {
-    const d = JSON.parse(e.data);
-    out(d.text);
-    S[b].live = { ...d, active: true };
-    if (cur === b) renderLive();
-  });
-  es.addEventListener("done", (e) => {
-    const d = JSON.parse(e.data);
-    out(b === "jev"
-      ? `\n\n-- ${d.tokens} prompt tokens scored in ${f(d.elapsed_s, 2)} s · ${f(d.tok_s, 0)} tok/s`
-      : `\n\n-- ${d.tokens} tokens · ${f(d.tok_s)} tok/s · TTFT ${f(d.ttft_s, 2)} s` + (d.mlx_tok_s ? ` · server reports ${f(d.mlx_tok_s)} tok/s` : ""));
-    stopProbe(b);
-  });
-  es.addEventListener("fail", (e) => { out(`\n[error] ${JSON.parse(e.data).error}`); stopProbe(b); });
-  es.onerror = () => stopProbe(b);
-  renderLive();
+// ---- support chat → reimbursement engine ------------------------------------
+const PRESETS = [
+  ["Flight cancelled, voucher only", "Delta cancelled my JFK to SFO flight on Sept 20 and only offered a $200 voucher. The ticket was $412 on my Chase Sapphire. They say vouchers are their policy. What do I do?"],
+  ["\"All sales final\"", "A boutique refuses to refund a $180 jacket that fell apart after one week. They say all sales are final. What can I do?"],
+  ["Past the return window", "I missed Best Buy's 15-day return window by 4 days on a $650 laptop with a defective screen. They say it's too late."],
+  ["Bank: \"charge was authorized\"", "My bank closed my $299 chargeback saying the charge was authorized because I gave the merchant my card. But the service was never delivered."],
+  ["Employer: \"not in policy\"", "My employer rejected an $86 client dinner saying alcohol isn't reimbursable, but my manager approved the dinner in advance."],
+  ["No receipt", "I lost the receipt for a $140 work taxi ride last month. Finance says no receipt, no reimbursement."],
+  ["Can't cancel subscription", "A gym keeps charging me $49/month three months after I cancelled in writing. They say I must cancel in person."],
+  ["Package never arrived", "Amazon marked my $220 order delivered on Sept 12 but it never arrived, and the third-party seller won't respond."],
+  ["Insurance denied ER", "My insurer denied a $1,200 ER bill as out-of-network even though I went to the nearest hospital in an emergency."],
+  ["Only store credit", "The airline refunded my cancelled $380 hotel add-on as store credit only. I want cash back."],
+];
+const newSession = () => "s" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+let chat = JSON.parse(sessionStorage.getItem("chat") || "null") || { session: newSession(), messages: [] };
+chat.busy = false;
+const saveChat = () => sessionStorage.setItem("chat", JSON.stringify({ session: chat.session, messages: chat.messages.filter((m) => !m.pending) }));
+
+$("presets").innerHTML = PRESETS.map(([label], i) => `<a data-i="${i}" title="${esc(PRESETS[i][1])}">${esc(label)}</a>`).join("");
+$("presets").querySelectorAll("a").forEach((a) => a.onclick = () => { $("chat-input").value = PRESETS[+a.dataset.i][1]; $("chat-input").focus(); });
+
+function triageTags(t) {
+  if (!t || t.error) return t && t.error ? `<span class="tag warn">triage failed</span>` : "";
+  const tags = [];
+  for (const [k, p] of (t.domain?.top3 || [])) if (p >= 0.15) tags.push(`<span class="tag dom">${esc(k.replace(/_/g, " "))}</span>`);
+  for (const [k, p] of (t.objection?.top3 || [])) if (p >= 0.15 && k !== "none_yet") tags.push(`<span class="tag obj">${esc(k.replace(/_/g, " "))}</span>`);
+  if (t.has_facts != null && t.has_facts < 0.5) tags.push(`<span class="tag warn">missing amount / company / date</span>`);
+  return tags.length ? `<div class="tags">${tags.join("")}</div>` : "";
 }
-function stopProbe(b = cur) {
-  if (probes[b]) { probes[b].es.close(); delete probes[b]; }
-  if (b === cur) { $("go").disabled = false; $("stop").disabled = true; }
-  renderLive();
+
+function renderChat() {
+  const log = $("chat-log");
+  log.innerHTML = chat.messages.map((m) => {
+    const meta = m.meta ? `<div class="meta">${m.meta}</div>` : "";
+    return `<div class="msg ${m.role}${m.pending ? " pending" : ""}">${esc(m.content || "")}${m.role === "user" ? triageTags(m.triage) : ""}${meta}</div>`;
+  }).join("") || `<div class="muted">Ask a reimbursement question or pick a common objection below. Replies come from the reimbursement-advocate engine, with the lessons from past cases in the prompt.</div>`;
+  log.scrollTop = log.scrollHeight;
+  $("chat-send").disabled = chat.busy;
 }
-$("go").onclick = startProbe;
-$("stop").onclick = () => stopProbe(cur);
+
+function renderTriage(t) {
+  if (!t) return;
+  if (t.error) { $("triage").innerHTML = `<span style="color:#b94a48">Jev triage failed: ${esc(t.error)}</span>`; return; }
+  const rows = (list) => (list || []).map(([k, p]) =>
+    `<tr><td>${esc(k.replace(/_/g, " "))}</td><td class="p">${f(p * 100, 0)}%</td></tr>`).join("");
+  $("triage").innerHTML = `<table>
+      <tr><td colspan="2"><b>Domain</b></td></tr>${rows(t.domain?.top3)}
+      <tr><td colspan="2"><b>Objection</b></td></tr>${rows(t.objection?.top3)}
+      <tr><td><b>Key facts present</b></td><td class="p">${t.has_facts == null ? "—" : f(t.has_facts * 100, 0) + "%"}</td></tr>
+    </table><div class="muted" style="margin-top:4px">${t.prompt_tokens} prompt tokens scored in ${f(t.elapsed_s, 1)} s. Near-equal shares mean several routes apply.</div>`;
+}
+
+async function loadEngine() {
+  try {
+    const e = await (await fetch("/api/chat/engine")).json();
+    const o = e.outcomes || {};
+    $("engine-bar").innerHTML = `Engine: <b>${esc(e.profile)}</b> ${e.profile_loaded ? "" : "(profile missing!)"} · ` +
+      `harness ${e.harness_token ? "<b>on</b> (web_search)" : "<b style='color:#b94a48'>off</b> (no HARNESS_TOKEN)"}` +
+      (e.limits ? ` · ≤${e.limits.max_tool_rounds} tool rounds, ${f(e.limits.timeout_ms / 1000, 0)} s` : "") +
+      ` · memory: <b>${e.turns}</b> turns (${e.support_turns} from this chat UI) · outcomes <b>${o.won || 0}</b> won / ${o.partial || 0} partial / ${o.lost || 0} lost`;
+    $("lessons").textContent = e.lessons || "none yet. Record an outcome to start the loop.";
+  } catch (err) {
+    $("engine-bar").textContent = "engine info unavailable: " + err;
+  }
+}
+
+async function streamPost(url, body, onEvent, signal) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
+  if (!r.ok || !r.body) throw new Error(`HTTP ${r.status}`);
+  const reader = r.body.getReader(), dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n\n")) >= 0) {
+      const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
+      let ev = "message", data = "";
+      for (const line of chunk.split("\n")) {
+        if (line.startsWith("event:")) ev = line.slice(6).trim();
+        else if (line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if (data) onEvent(ev, JSON.parse(data));
+    }
+  }
+}
+
+async function sendChat() {
+  const text = $("chat-input").value.trim();
+  if (!text || chat.busy) return;
+  const mode = $("chat-mode").value;
+  const backend = ["qwen35", "qwen25"].includes(cur) ? cur : "qwen35";
+  const target = mode === "engine" ? "qwen35" : backend;
+  $("chat-input").value = "";
+  const user = { role: "user", content: text };
+  const bot = { role: "assistant", content: mode === "engine" ? "Engine working…" : "", pending: true };
+  chat.messages.push(user, bot);
+  chat.busy = true;
+  probes[target] = { prompt: text, submitted: Date.now() / 1000, mode };
+  renderChat(); renderLive();
+  const history = chat.messages.filter((m) => !m.pending).map(({ role, content }) => ({ role, content }));
+  let streamed = "";
+  try {
+    await streamPost("/api/chat", { session: chat.session, mode, backend, messages: history }, (ev, d) => {
+      if (ev === "triage") { user.triage = d; renderTriage(d); }
+      else if (ev === "status") { if (!streamed) bot.content = d.elapsed_s ? `Engine working… ${f(d.elapsed_s, 0)} s (it may run web searches)` : d.phase; }
+      else if (ev === "token") {
+        if (d.text) { streamed += d.text; bot.content = streamed; }
+        else if (!streamed && d.reasoning) bot.content = "Thinking…";
+        S[target].live = { ...d, active: true };
+        if (cur === target) renderLive();
+      } else if (ev === "reply") {
+        bot.content = d.text; bot.pending = false;
+        const h = d.harness || {};
+        bot.meta = [d.mode === "engine" ? `engine · ${esc(d.model)}` : `quick · ${esc(d.model)}`,
+          h.tool_calls ? `${h.tool_calls} web search${h.tool_calls > 1 ? "es" : ""}` : d.mode === "engine" ? "no tool calls" : "",
+          `${f(d.elapsed_s, 1)} s`, d.lessons ? "lessons in prompt" : ""].filter(Boolean).join(" · ");
+      } else if (ev === "fail") { bot.content = `[error] ${d.error}`; bot.pending = false; }
+      renderChat();
+    });
+  } catch (err) {
+    bot.content = `[error] ${err}`; bot.pending = false;
+  }
+  if (bot.pending) { bot.pending = false; bot.content ||= "(no reply)"; }
+  chat.busy = false;
+  delete probes[target];
+  saveChat(); renderChat(); renderLive(); loadEngine();
+}
+
+async function recordOutcome(outcome) {
+  const firstUser = chat.messages.find((m) => m.role === "user");
+  if (!firstUser) { $("outcome-status").textContent = "Start a conversation first."; return; }
+  const lastTriage = [...chat.messages].reverse().find((m) => m.triage && !m.triage.error)?.triage;
+  const domain = lastTriage?.domain?.choice ? `[${lastTriage.domain.choice.replace(/_/g, " ")}] ` : "";
+  const r = await fetch("/api/chat/outcome", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session: chat.session, outcome, note: $("outcome-note").value, summary: domain + firstUser.content.slice(0, 200) }) });
+  const d = await r.json();
+  $("outcome-status").textContent = r.ok ? `Recorded "${outcome}". Now ${d.cases} outcomes in the engine; future replies (here and on Telegram) will weigh it.` : d.error;
+  if (r.ok) { $("outcome-note").value = ""; loadEngine(); }
+}
+
+$("chat-send").onclick = sendChat;
+$("chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); } });
+$("chat-new").onclick = () => { chat = { session: newSession(), messages: [], busy: false }; saveChat(); renderChat(); $("triage").textContent = "New conversation."; $("outcome-status").textContent = ""; };
+document.querySelectorAll(".out-btn").forEach((b) => b.onclick = () => recordOutcome(b.dataset.o));
+renderChat();
+loadEngine();
 
 async function fireLoad() {
-  const q = new URLSearchParams({ backend: cur, rps: $("rps").value, seconds: $("secs").value, max_tokens: $("lmax").value });
+  const q = new URLSearchParams({ backend: cur, rps: $("rps").value, seconds: $("secs").value,
+    max_tokens: $("lmax").value, prompt: $("prompt").value });
   const r = await fetch("/api/load?" + q);
   const d = await r.json();
-  if (!r.ok) $("load-status").textContent = d.error || "failed";
+  if (!r.ok) { $("load-status").textContent = d.error || "failed"; return; }
+  $("out").classList.remove("muted");
+  $("out").textContent = `-- load: ${d.total} requests @ ${d.rps}/s on ${cur}\n`;
 }
 $("load-go").onclick = fireLoad;
 
@@ -261,15 +382,16 @@ function renderLive() {
 
   const rows = [], p = probes[cur];
   const nextId = s.reqs.length ? s.reqs.at(-1).id + 1 : "—";
-  if (active) {
-    const max = (p && p.max) || 0;
+  if (active || p) {
+    const engine = p && p.mode === "engine" && !active;
     const progress = jev
       ? bar(1, 1, "evaluating…", "running")
-      : bar(live.tokens || 0, max || live.tokens || 1, `${live.tokens || 0}/${max || "?"}`, "running");
-    rows.push(`<tr><td>${nextId}</td><td>${srcBadge("probe")}</td>
-      <td class="desc">${esc(p ? p.prompt : "(another tab)")}<span class="kill-link" onclick="stopProbe()">(kill)</span></td>
-      <td>${when(p && p.submitted)}</td><td>${dur(live.elapsed_s || (p ? Date.now() / 1000 - p.submitted : null))}</td>
-      <td>${live.ttft_s == null ? "—" : dur(live.ttft_s)}</td><td>${jev ? "—" : f(live.inst_tok_s)}</td><td>${progress}</td></tr>`);
+      : engine ? bar(1, 1, "harness running", "running")
+      : bar(live.tokens || 0, 900, `${live.tokens || 0} tokens`, "running");
+    rows.push(`<tr><td>${nextId}</td><td>${srcBadge(p ? "chat" : "probe")}</td>
+      <td class="desc">${p ? `${p.mode} chat: ` : ""}${esc(p ? p.prompt : "(another tab)")}</td>
+      <td>${when(p && p.submitted)}</td><td>${dur(engine ? Date.now() / 1000 - p.submitted : live.elapsed_s || (p ? Date.now() / 1000 - p.submitted : null))}</td>
+      <td>${!engine && live.ttft_s != null ? dur(live.ttft_s) : "—"}</td><td>${jev || engine ? "—" : f(live.inst_tok_s)}</td><td>${progress}</td></tr>`);
   }
   const l = s.load || {};
   const loadOpen = l.active ? Math.max(0, (l.sent || 0) - (l.done || 0) - (l.failed || 0)) : 0;
@@ -313,7 +435,7 @@ function renderReqs() {
   const s = st();
   const counts = { all: s.reqs.length, normal: 0, probe: 0, load: 0 };
   s.reqs.forEach((r) => { counts[r.source || "normal"] = (counts[r.source || "normal"] || 0) + 1; });
-  $("filters").innerHTML = ["all", "normal", "probe", "load"].map((k) =>
+  $("filters").innerHTML = ["all", "normal", "chat", "probe", "load"].map((k) =>
     `<a class="${filter === k ? "on" : ""}" data-f="${k}">${k} (${counts[k] || 0})</a>`).join("");
   $("filters").querySelectorAll("a").forEach((a) => a.onclick = () => { filter = a.dataset.f; renderReqs(); });
   const list = s.reqs.filter((r) => filter === "all" || (r.source || "normal") === filter).sort((a, b) => {
@@ -449,7 +571,7 @@ function drawLive() {
   inWin.forEach((r) => {
     const x1 = X(r.timestamp_unix), x0 = Math.max(pad.l, X(r.timestamp_unix - (r.request_elapsed_s || 0)));
     const y = Y(rate(r));
-    ctx.fillStyle = !rate(r) ? "#ddd" : r.source === "load" ? "#fbb450" : r.source === "probe" ? "#3ec0ff" : "#b8c7d3";
+    ctx.fillStyle = !rate(r) ? "#ddd" : r.source === "load" ? "#fbb450" : r.source === "probe" ? "#3ec0ff" : r.source === "chat" ? "#7bc47f" : "#b8c7d3";
     ctx.strokeStyle = r.source === "load" ? "#c67605" : "#1c8ecb";
     ctx.fillRect(x0, y - 7, Math.max(4, x1 - x0), 14); ctx.strokeRect(x0, y - 7, Math.max(4, x1 - x0), 14);
     ctx.fillStyle = "#333";
