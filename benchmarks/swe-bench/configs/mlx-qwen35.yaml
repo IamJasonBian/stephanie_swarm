@@ -1,0 +1,19 @@
+# mini-swe-agent + local MLX (Qwen3.5-27B-6bit, OpenAI-compatible on :8321)
+model:
+  model_name: openai/mlx-community/Qwen3.5-27B-6bit
+  model_kwargs:
+    api_base: http://127.0.0.1:8321/v1
+    api_key: local
+    temperature: 0.2
+    max_tokens: 2048
+    drop_params: true
+  cost_tracking: ignore_errors
+
+agent:
+  step_limit: 30
+  cost_limit: 0
+
+environment:
+  run_args: ["--rm", "--platform", "linux/amd64"]
+  pull_timeout: 600
+  timeout: 120

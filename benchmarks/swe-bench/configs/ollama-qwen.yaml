@@ -1,0 +1,19 @@
+# mini-swe-agent + local Ollama for SWE-bench smoke runs
+model:
+  model_name: ollama/qwen2.5-coder:7b
+  model_kwargs:
+    api_base: http://localhost:11434
+    temperature: 0.0
+    drop_params: true
+  cost_tracking: ignore_errors
+
+agent:
+  # Keep short for a local smoke run
+  step_limit: 40
+  cost_limit: 0
+
+environment:
+  # SWE-bench images are linux/amd64; required on Apple Silicon
+  run_args: ["--rm", "--platform", "linux/amd64"]
+  pull_timeout: 600
+  timeout: 120
