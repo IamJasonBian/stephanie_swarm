@@ -353,15 +353,18 @@ in `services/.env` (rejected chat ids are logged so you can add them), then
 claude-code-telegram bots it has no shell or filesystem access — only what the
 harness profile allows.
 
-It ships tuned as a **reimbursement / dispute advocate**
+It ships tuned as a **universal get-money-back advocate**
 (`config/harnesses/reimbursement-advocate.json`, override with
-`PENGUIN_PROFILE`): corporate expense policy (Rho/Brex/Ramp-style receipt
-thresholds, business purpose, submission windows), card chargebacks (Reg Z /
-Reg E windows, network reason codes, merchant-first documentation), bank fee
-and escalation ladders (executive office → CFPB/OCC/state AG), airline/hotel/
-rideshare refunds. Every reply follows intake → triage + deadlines → evidence →
-a ready-to-send message → escalation path, and anything uncertain is looked up
-with `web_search` and cited.
+`PENGUIN_PROFILE`): employer/corporate expense (Rho/Brex/Ramp/Concur/…), card
+chargebacks (Reg Z / Reg E, network reason codes, merchant-first), bank/ACH/
+Zelle escalations (executive office → CFPB/OCC/state AG), marketplace &
+platform purchase protection (Amazon A-to-z, PayPal, app stores), travel
+(DOT/airline/hotel/rideshare), healthcare billing & HSA/FSA, subscriptions /
+BNPL, warranties & card-linked price protection, shipping and ticket claims.
+Routes are ranked so the strongest clock is not burned
+(merchant/platform → employer → issuer/bank → regulator). Every reply:
+intake → triage + deadlines → evidence → ready-to-send message → follow-through;
+uncertain facts go through `web_search` with citations.
 
 - **Receipts and documents.** Photos (and image documents) go to the model as
   images — qwen is a VLM, so it reads merchant/date/total/last-4 straight off
