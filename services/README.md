@@ -387,6 +387,52 @@ Only one process may long-poll a bot token: if the log shows `Conflict:
 terminated by other getUpdates request`, another instance (another machine, an
 old hookup) holds the same token and messages will split between them.
 
+### Throughput and concurrency
+
+The MLX server batches concurrent requests. `services/mlx/.env.example` sets 4
+decode slots with a 4-bit KV cache (`MLX_MAX_SEQS=4`, `MLX_KV_BITS=4`); copy it
+to `services/mlx/.env` and set dispatch's `QWEN_CONCURRENCY` to match
+(`services/dispatch/.env.example`). Measured on a 48 GiB M-series Mac with
+Qwen3.5-27B-6bit:
+
+| Load | Aggregate decode | Per stream | Peak memory |
+| --- | --- | --- | --- |
+| 1 request | 8.6 tok/s | 8.6 tok/s | 26.2 GB (fp16 KV) |
+| 4 concurrent | 32.2 tok/s | ~8 tok/s | 24.1 GB (4-bit KV) |
+| 40 requests in 1 s, 32 tokens each | ~29 tok/s, drained in ~45 s, 0 failed | ~7.3 tok/s | — |
+
+## Model serve monitor (`status-ui/`, `:8880`)
+
+A zero-dependency Python server with a Spark-UI-style dashboard for the local
+model servers, updated live over Server-Sent Events:
+
+```bash
+bin/swarm-svc-plists-install.sh --only status-ui     # or: python3 services/status-ui/server.py
+open http://127.0.0.1:8880/#active
+```
+
+- **Backend toggle** (keys `1`/`2`/`3`): Qwen3.5-27B on MLX (`:8321`),
+  qwen2.5-coder:7b on Ollama (`:11434`), and the Jev scoring server
+  (LLM2Jev, `:30000`). Backends that are down show red; the others keep working.
+- **Jobs tab**: live tok/s and a 2-minute event timeline, active jobs (engine
+  slots, queue, probe and load-test progress), and completed jobs with TTFT,
+  prefill/decode rates, peak memory and token counts. Every job carries a
+  source (`normal`, `probe`, `load`) with filter chips.
+- **Probe**: streams one completion token by token through the monitor
+  (`/api/generate`), the only way to see per-token throughput — MLX's `/metrics`
+  reports requests after they finish. For Jev a probe is one `/v1/systemone`
+  evaluation, measured in prompt tokens per second.
+- **Load test**: `/api/load?backend=&rps=&seconds=&max_tokens=` fires up to 400
+  non-streaming requests at a fixed rate. MLX records carry no request id, so the
+  monitor matches its own jobs back by token counts and finish time
+  (tags persist in `status-ui/tags.json`, gitignored).
+- **Timeline / Executors / Environment tabs**: per-job decode bars with
+  percentile summaries, all model servers side by side, and raw server
+  properties.
+
+Ollama and Jev expose no metrics API, so for them only jobs sent through the
+monitor have timings; Jev's other requests are counted from `/tmp/llm2jev.log`.
+
 ## Process pickup & scheduling (this machine and other instances)
 
 Two scripts in the repo's `bin/` follow the existing `stephanie-*` launchd

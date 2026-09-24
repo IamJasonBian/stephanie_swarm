@@ -12,9 +12,11 @@ curl -s localhost:8321/v1/models         # lists the loaded model when ready
 ```
 
 Loopback only by design: other swarm machines reach this model through this
-node's compute service (`:8878`), never the raw model port. One request at a
-time (`--max-num-seqs 1`) — a 27B model on a 48 GiB Mac; dispatch's
-`QWEN_CONCURRENCY=1` mirrors that.
+node's compute service (`:8878`), never the raw model port. Defaults to one
+request at a time (`MLX_MAX_SEQS=1`); `services/mlx/.env` raises it to 4 with a
+4-bit KV cache (`MLX_KV_BITS=4`) — ~32 tok/s aggregate vs ~8.6 for one stream,
+peak ~24 GB. Keep dispatch's `QWEN_CONCURRENCY` (`services/dispatch/.env`) equal
+to `MLX_MAX_SEQS`.
 
 Cold start (weights → unified memory) takes ~30–60 s; compute reports
 `backends.qwen.ready=false` until `/v1/models` lists the model, and
