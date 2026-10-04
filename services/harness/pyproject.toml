@@ -1,0 +1,24 @@
+[project]
+name = "harness"
+version = "0.1.0"
+description = "Generic job harness: HTTP API + process-isolated dispatcher over SQLite"
+requires-python = ">=3.11"
+dependencies = [
+    "flask>=3.0",
+    "gunicorn>=23.0",
+    "psutil>=7.2.2",
+]
+
+[project.scripts]
+harness-dispatcher = "harness.dispatcher:main"
+harness-telegram = "harness.telegram:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
