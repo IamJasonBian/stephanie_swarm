@@ -17,6 +17,16 @@ Clients that don't need queueing can hit the compute service directly — its
 chat route is OpenAI-compatible, so any standard OpenAI client works by
 pointing its base URL at `http://localhost:8878/v1`.
 
+## harness (Python, :8790)
+
+[`harness/`](harness/README.md) is a standalone Python job harness: SQLite
+queue, one spawned process per job (timeouts, cancel, crash isolation, lease
+recovery), an `agent` job kind with streamed thinking + web / read-only
+filesystem tools, a Telegram bridge that shows the live thinking/tool chain,
+and capacity metrics (tok/s, ttft, latency, CPU / RAM / swap / battery /
+resident models) at `GET /v1/metrics`. It runs next to dispatch/compute and
+talks to the same Ollama.
+
 ## Run
 
 Node 25 runs the TypeScript directly — no build step.
