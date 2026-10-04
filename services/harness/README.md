@@ -52,6 +52,13 @@ to `HARNESS_FS_ROOTS` (default `$HOME`) with secret paths (`.ssh`, `.env`,
 keys, keychains, …) blocked. Thinking models (`qwen3:8b`) reason by default;
 `"think": false` in the payload turns it off.
 
+Sampling and verbosity: `AGENT_TEMPERATURE` / `AGENT_TOP_P` (defaults in
+`.env.example`: 1.0 / 0.95 — more varied than the model default) and
+`LLM_TEMPERATURE` / `LLM_TOP_P`; a job's payload `temperature` / `top_p`
+overrides them. Final answers are held to ≤3 short sentences or ≤5 bullets by
+`AGENT_ANSWER_STYLE` (set it empty for no limit, or per job via
+`"answer_style"`).
+
 While a job runs, `GET /v1/jobs/<id>` includes `progress`
 (`{"phase": "thinking|tool|answering|done", "step", "live", "chain"}`).
 

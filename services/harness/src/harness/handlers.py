@@ -171,10 +171,9 @@ def llm(payload: dict, ctx: Context) -> Any:
     "base_url", "max_tokens", "temperature". Defaults from LLM_BASE_URL /
     LLM_MODEL / LLM_API_KEY."""
     model = payload.get("model") or os.environ.get("LLM_MODEL") or "qwen2.5:1.5b"
-    body = {"model": model, "messages": _messages(payload)}
-    for k in ("max_tokens", "temperature"):
-        if k in payload:
-            body[k] = payload[k]
+    body = {"model": model, "messages": _messages(payload), **_sampling(payload, "LLM")}
+    if "max_tokens" in payload:
+        body["max_tokens"] = payload["max_tokens"]
     started = time.time()
     data = _chat(payload, body)
     elapsed = time.time() - started
@@ -193,8 +192,23 @@ AGENT_SYSTEM = (
     "You are an assistant running on the user's own computer with tools for web search, fetching web pages, "
     "and READ-ONLY access to the local filesystem (list_dir, read_file, find_files). Use tools whenever the "
     "question needs current information or file contents; never invent file contents or URLs. "
-    "Paths can start with ~ for the home directory. Keep final answers concise."
+    "Paths can start with ~ for the home directory."
 )
+# Appended to AGENT_SYSTEM; override with AGENT_ANSWER_STYLE (empty = no limit).
+DEFAULT_ANSWER_STYLE = (
+    "Final answer: lead with the answer itself in at most 3 short sentences or a list of at most 5 items. "
+    "No preamble, no restating the question, no summary of your steps, no offers of further help."
+)
+
+
+def _sampling(payload: dict, prefix: str) -> dict:
+    """temperature / top_p from the payload, else <PREFIX>_TEMPERATURE / <PREFIX>_TOP_P env."""
+    out = {}
+    for key in ("temperature", "top_p"):
+        value = payload.get(key, os.environ.get(f"{prefix}_{key.upper()}"))
+        if value not in (None, ""):
+            out[key] = float(value)
+    return out
 
 
 def _text_tool_calls(content: str, known: dict) -> list[dict]:
@@ -238,12 +252,16 @@ def agent(payload: dict, ctx: Context) -> Any:
 
     model = payload.get("model") or os.environ.get("AGENT_MODEL") or os.environ.get("LLM_MODEL") or "qwen2.5:1.5b"
     messages = _messages(payload)
+    style = payload.get("answer_style", os.environ.get("AGENT_ANSWER_STYLE", DEFAULT_ANSWER_STYLE))
+    system = AGENT_SYSTEM + (f"\n\n{style}" if style else "")
     if messages[0].get("role") != "system":
-        messages = [{"role": "system", "content": AGENT_SYSTEM}, *messages]
+        messages = [{"role": "system", "content": system}, *messages]
     else:
-        messages = [{"role": "system", "content": AGENT_SYSTEM + "\n\n" + messages[0]["content"]}, *messages[1:]]
+        messages = [{"role": "system", "content": system + "\n\n" + messages[0]["content"]}, *messages[1:]]
     schemas = [schema for _, schema in tools.TOOLS.values()]
-    extra = {"reasoning_effort": "none"} if payload.get("think") is False else {}
+    extra = _sampling(payload, "AGENT")
+    if payload.get("think") is False:
+        extra["reasoning_effort"] = "none"
 
     chain: list[dict] = []  # [{"type": "thinking", "text"} | {"type": "tool", "tool", "args", "result_preview"}]
     state = {"phase": "thinking", "step": 0, "chain": chain, "live": ""}
@@ -303,6 +321,7 @@ def agent(payload: dict, ctx: Context) -> Any:
     push(force=True)
     return {
         "model": model,
+        "sampling": {k: v for k, v in extra.items() if k in ("temperature", "top_p")},
         "text": (final or "").strip(),
         "chain": chain,
         "tool_calls": [c for c in chain if c["type"] == "tool"],

@@ -36,7 +36,7 @@ HISTORY = int(os.environ.get("TELEGRAM_HISTORY", "6"))
 KIND = os.environ.get("TELEGRAM_KIND", "agent" if ALLOWED else "llm")
 if KIND == "agent" and not ALLOWED:
     raise SystemExit("TELEGRAM_KIND=agent needs TELEGRAM_ALLOWED_CHAT_IDS (it exposes your filesystem)")
-SYSTEM = os.environ.get("TELEGRAM_SYSTEM_PROMPT", "You are a concise, helpful assistant replying in a Telegram chat.")
+SYSTEM = os.environ.get("TELEGRAM_SYSTEM_PROMPT", "You are replying in a Telegram chat on a phone: be brief and plain.")
 MAX_MESSAGE = 4096  # Telegram's limit per message
 EDIT_EVERY_S = 1.5  # Telegram rate-limits edits; ~1/s per chat is safe
 
