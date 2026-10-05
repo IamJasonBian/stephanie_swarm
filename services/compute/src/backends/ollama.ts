@@ -5,9 +5,34 @@
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
 const HERMES_MODEL = process.env.HERMES_MODEL ?? "hermes3:8b";
 
+// OpenAI-shaped tool call as emitted by tool-capable backends (qwen via MLX,
+// kimi). Carried through unchanged so a harness can execute it.
+export interface ToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+// Multimodal user content (OpenAI shape). Vision-capable backends (qwen via
+// MLX) take image_url data URIs directly — receipts/statements as photos.
+export type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string; detail?: string } };
+
 export interface ChatMessage {
   role: string;
-  content: string;
+  // null when an assistant turn is purely tool calls; array for multimodal.
+  content: string | null | ContentPart[];
+  tool_calls?: ToolCall[];
+  // set on role:"tool" messages — which call this result answers.
+  tool_call_id?: string;
+  name?: string;
+}
+
+// OpenAI function-tool definition, passed through verbatim.
+export interface ToolDefinition {
+  type: "function";
+  function: { name: string; description?: string; parameters?: Record<string, unknown> };
 }
 
 export interface ChatRequest {
@@ -18,6 +43,15 @@ export interface ChatRequest {
   presence_penalty?: number;
   frequency_penalty?: number;
   seed?: number;
+  tools?: ToolDefinition[];
+  tool_choice?: "auto" | "none" | "required" | { type: "function"; function: { name: string } };
+}
+
+// Text-only view of a message's content (for backends without vision).
+export function contentText(content: ChatMessage["content"]): string {
+  if (typeof content === "string") return content;
+  if (!content) return "";
+  return content.map((p) => (p.type === "text" ? p.text : "[image]")).join("\n");
 }
 
 export class BackendUnavailable extends Error {

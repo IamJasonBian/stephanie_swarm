@@ -5,13 +5,23 @@
 # Usage (from a clone of this repo):
 #   bin/swarm-node-setup.sh                 worker node: compute service only
 #   bin/swarm-node-setup.sh --role hub      hub node: compute + dispatch + tunnel
+#   bin/swarm-node-setup.sh --with-mlx      also: local MLX model server (qwen,
+#                                           Apple Silicon, ~21 GB download) +
+#                                           the web-search MCP server venv
 #
 # After it finishes, add this machine's URL (printed at the end) to
 # COMPUTE_URLS in the hub's services/dispatch/.env and bounce dispatch.
 set -eu
 
 ROLE="worker"
-[ "${1:-}" = "--role" ] && ROLE="${2:-worker}"
+WITH_MLX=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --role) ROLE="${2:-worker}"; shift 2 ;;
+    --with-mlx) WITH_MLX=1; shift ;;
+    *) echo "unknown flag: $1"; exit 1 ;;
+  esac
+done
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SERVICES_DIR="$REPO_DIR/services"
@@ -46,6 +56,14 @@ if [ ! -x "$SERVICES_DIR/converter/.venv/bin/python" ]; then
     && uv pip install --quiet --python .venv/bin/python docling)
 fi
 
+# 4b. Local MLX model + web-search MCP (opt-in) -----------------------------
+if [ "$WITH_MLX" = 1 ]; then
+  echo "==> web-search MCP server venv"
+  "$REPO_DIR/mcp-servers/web-search/setup.sh"
+  echo "==> MLX model server (this downloads the model if missing)"
+  "$SERVICES_DIR/mlx/setup.sh" --download
+fi
+
 # 5. Env template -----------------------------------------------------------
 if [ ! -f "$SERVICES_DIR/.env" ]; then
   cat > "$SERVICES_DIR/.env" <<'EOF'
@@ -54,6 +72,20 @@ if [ ! -f "$SERVICES_DIR/.env" ]; then
 #OPENROUTER_API_KEY=
 #TUNNEL_TOKEN=
 #CLAUDE_BACKEND=cli
+
+# harness (server-side MCP tool loop, compute /v1/agent/completions).
+# Same random value on the hub and every compute node that should run tools.
+# Unset ⇒ agent jobs are refused everywhere.  openssl rand -hex 24
+#HARNESS_TOKEN=
+
+# local MLX model (qwen backend) — see services/mlx/README.md
+#MLX_MODEL=mlx-community/Qwen3.5-27B-6bit
+#MLX_PORT=8321
+
+# telegram-penguin bot (services/telegram-penguin) — token from @BotFather;
+# chat ids are default-deny, rejected ids are logged so you can add them.
+#TELEGRAM_BOT_TOKEN=
+#TELEGRAM_ALLOWED_CHAT_IDS=
 
 # node discovery (worker nodes): where the hub's dispatch lives + the shared
 # key from the hub's services/.env. Compute self-registers and heartbeats;
@@ -75,6 +107,7 @@ if [ "$ROLE" = "hub" ]; then
 else
   "$REPO_DIR/bin/swarm-svc-plists-install.sh" --only compute
 fi
+[ "$WITH_MLX" = 1 ] && "$REPO_DIR/bin/swarm-svc-plists-install.sh" --only mlx
 
 # 7. recovery watchdog — re-probes every 5 min and bounces anything unhealthy
 echo "==> installing recovery watchdog"

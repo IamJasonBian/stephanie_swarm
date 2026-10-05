@@ -30,7 +30,7 @@ interface StoredMessage {
   ts: number;
 }
 
-const MODELS = ["hermes", "claude", "kimi"];
+const MODELS = ["hermes", "claude", "kimi", "qwen"];
 const HISTORY_LIMIT = 40; // messages sent to the model per request
 
 // ---------------------------------------------------------------------------
@@ -153,6 +153,7 @@ export default {
           if (node.backends.hermes?.reachable) status.hermes = true;
           if (node.backends.claude?.ready) status.claude = true;
           if (node.backends.kimi?.ready) status.kimi = true;
+          if (node.backends.qwen?.ready) status.qwen = true;
         }
       } catch {
         // leave everything offline

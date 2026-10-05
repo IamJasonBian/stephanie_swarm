@@ -101,9 +101,41 @@ if [ -f "$LA/com.${USER}.swarm-svc.compute.plist" ]; then
   fi
 fi
 
+# mlx model server (qwen) — /v1/models lists the model only once weights are
+# loaded, so a fresh start needs grace: only bounce if the process is also
+# missing or has been up > MLX_GRACE_S without becoming ready.
+mlx_label="com.${USER}.swarm-svc.mlx"
+if [ -f "$LA/${mlx_label}.plist" ]; then
+  if curl -s --max-time 4 "http://127.0.0.1:${MLX_PORT:-8321}/v1/models" | grep -q '"id"'; then
+    echo "  ✓ mlx model loaded"
+  else
+    mlx_pid="$(pgrep -f 'mlx_vlm.server' | head -1 || true)"
+    if [ -z "$mlx_pid" ]; then
+      act "$mlx_label" "no mlx_vlm.server process"
+    else
+      up_s="$(ps -o etimes= -p "$mlx_pid" 2>/dev/null | tr -d ' ')"
+      if [ "${up_s:-0}" -gt "${MLX_GRACE_S:-180}" ]; then
+        act "$mlx_label" "process up ${up_s}s but model not loaded"
+      else
+        echo "  … mlx loading (${up_s}s, grace ${MLX_GRACE_S:-180}s)"
+      fi
+    fi
+  fi
+fi
+
 check_http_svc compute  "http://localhost:${COMPUTE_PORT:-8878}/health"
 check_http_svc dispatch "http://localhost:${DISPATCH_PORT:-8877}/health"
 check_http_svc frontend "http://localhost:${FRONTEND_PORT:-8879}/health"
+
+# telegram bot has no HTTP surface — recover on missing process.
+tg_label="com.${USER}.swarm-svc.telegram"
+if [ -f "$LA/${tg_label}.plist" ]; then
+  if pgrep -f "telegram-penguin" >/dev/null 2>&1; then
+    echo "  ✓ telegram bot process present"
+  else
+    act "$tg_label" "no telegram bot process"
+  fi
+fi
 
 # tunnel has no local HTTP surface — recover on missing process.
 tunnel_label="com.${USER}.swarm-svc.tunnel"

@@ -48,6 +48,7 @@
     <option value="hermes">hermes (local, free)</option>
     <option value="claude">claude</option>
     <option value="kimi">kimi k2.6</option>
+    <option value="qwen">qwen 3.5 27B (local mlx)</option>
   </select>
   <label><input type="checkbox" id="fallback" checked> fallback</label>
   <button id="reset" type="button">new chat</button>
@@ -101,6 +102,7 @@ async function loadHealth() {
       "hermes " + (b.hermes?.reachable ? "✓" : "✗"),
       "claude " + (b.claude?.ready ? "✓" : "✗"),
       "kimi " + (b.kimi?.ready ? "✓" : "✗"),
+      "qwen " + (b.qwen?.ready ? "✓" : "✗"),
     ];
     statusEl.textContent = h.ok === false ? (h.error ?? "backend offline") : parts.join(" · ");
   } catch { statusEl.textContent = "backend offline"; }

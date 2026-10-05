@@ -5,9 +5,14 @@
 
 import { randomUUID } from "node:crypto";
 
-export const BACKENDS = ["hermes", "claude", "kimi"] as const;
+export const BACKENDS = ["hermes", "claude", "kimi", "qwen"] as const;
 export type Backend = (typeof BACKENDS)[number];
-export type JobType = "chat" | "execute" | "convert";
+// agent = chat + server-side MCP tool loop (compute /v1/agent/completions).
+export type JobType = "chat" | "execute" | "convert" | "agent";
+// Backends that can run agent jobs (accept tool definitions).
+export const TOOL_CAPABLE: readonly Backend[] = ["qwen", "kimi"];
+// Local single-model backends: one slot per compute node.
+const LOCAL_BACKENDS: readonly Backend[] = ["hermes", "qwen"];
 export type JobStatus = "queued" | "running" | "done" | "failed";
 
 export interface JobPreferences {
@@ -31,25 +36,30 @@ export interface Job {
 const RESULT_TTL_MS = 60 * 60 * 1000;
 
 // Concurrency scales with pool size: each compute node can run one local
-// hermes at a time, so N nodes ⇒ N parallel hermes slots. The pool is dynamic
-// (nodes self-register), so index.ts calls setNodeCount() as it changes.
-const HERMES_PER_NODE = Number(process.env.HERMES_CONCURRENCY ?? 1);
+// model (hermes, qwen) at a time, so N nodes ⇒ N parallel slots each. The
+// pool is dynamic (nodes self-register), so index.ts calls setNodeCount().
+const PER_NODE: Record<"hermes" | "qwen", number> = {
+  hermes: Number(process.env.HERMES_CONCURRENCY ?? 1),
+  // A 27B model on a 48 GiB Mac is one inference at a time.
+  qwen: Number(process.env.QWEN_CONCURRENCY ?? 1),
+};
 const NODE_COUNT = Math.max(
   1,
   (process.env.COMPUTE_URLS ?? process.env.COMPUTE_URL ?? "x").split(",").filter((s) => s.trim()).length
 );
 
 const limits: Record<Backend, number> = {
-  hermes: HERMES_PER_NODE * NODE_COUNT,
+  hermes: PER_NODE.hermes * NODE_COUNT,
+  qwen: PER_NODE.qwen * NODE_COUNT,
   claude: Number(process.env.CLAUDE_CONCURRENCY ?? 4),
   kimi: Number(process.env.KIMI_CONCURRENCY ?? 4),
 };
 
 export function setNodeCount(n: number): void {
-  limits.hermes = HERMES_PER_NODE * Math.max(1, n);
+  for (const b of LOCAL_BACKENDS) limits[b] = PER_NODE[b as "hermes" | "qwen"] * Math.max(1, n);
   void pump(); // new capacity may unblock queued jobs
 }
-const running: Record<Backend, number> = { hermes: 0, claude: 0, kimi: 0 };
+const running: Record<Backend, number> = { hermes: 0, claude: 0, kimi: 0, qwen: 0 };
 
 const jobs = new Map<string, Job>();
 const pending: Job[] = [];
@@ -109,12 +119,17 @@ export function queueStats() {
 
 function pickBackend(job: Job): Backend {
   if (job.preferences.model) return job.preferences.model;
+  if (job.type === "agent") return TOOL_CAPABLE[0];
   // No preference: rotate through the backends so none starves.
   roundRobin = (roundRobin + 1) % BACKENDS.length;
   return BACKENDS[roundRobin];
 }
 
-function fallbackCandidates(b: Backend): Backend[] {
+// Chat may fall back anywhere. Agent jobs never fall back: the profile pins
+// which backends may run its tools, and switching silently to a cloud model
+// would change the trust boundary mid-request.
+function fallbackCandidates(job: Job, b: Backend): Backend[] {
+  if (job.type !== "chat") return [];
   return BACKENDS.filter((x) => x !== b);
 }
 
@@ -124,16 +139,18 @@ async function pump(): Promise<void> {
   for (let i = 0; i < pending.length; i++) {
     const job = pending[i];
     const backend = pickBackend(job);
-    // Non-chat jobs (execute → judge0, convert → docling) don't touch an LLM;
-    // they occupy a claude slot arbitrarily to bound total concurrency.
-    const slot: Backend = job.type === "chat" ? backend : "claude";
+    // chat/agent jobs hold their backend's slot. Non-LLM jobs (execute →
+    // judge0, convert → docling) occupy a claude slot arbitrarily to bound
+    // total concurrency.
+    const usesModel = job.type === "chat" || job.type === "agent";
+    const slot: Backend = usesModel ? backend : "claude";
     if (running[slot] >= limits[slot]) continue;
 
     pending.splice(i, 1);
     i--;
     running[slot]++;
     job.status = "running";
-    if (job.type === "chat") job.model = backend;
+    if (usesModel) job.model = backend;
     void run(job, backend, slot);
   }
 }
@@ -142,12 +159,12 @@ async function run(job: Job, backend: Backend, slot: Backend): Promise<void> {
   try {
     const { result, model } = await executor!(job, backend);
     job.result = result;
-    if (job.type === "chat") job.model = model;
+    if (job.type === "chat" || job.type === "agent") job.model = model;
     job.status = "done";
   } catch (e) {
     const errors = [`${backend}: ${e instanceof Error ? e.message : String(e)}`];
-    if (job.type === "chat" && job.preferences.fallback) {
-      for (const alt of fallbackCandidates(backend)) {
+    if (job.preferences.fallback) {
+      for (const alt of fallbackCandidates(job, backend)) {
         try {
           const { result, model } = await executor!(job, alt);
           job.result = result;

@@ -1,0 +1,8 @@
+{
+  "name": "telegram-penguin",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.ts"
+  }
+}
