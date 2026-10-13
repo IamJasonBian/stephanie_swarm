@@ -64,9 +64,9 @@ export function splitUnifiedDiff(diff: string): { path: string; diff: string }[]
   });
 }
 
-function run(cmd: string, args: string[], cwd?: string): Promise<string> {
+function run(cmd: string, args: string[], cwd?: string, timeoutMs = 60_000): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { cwd, maxBuffer: 8 * 1024 * 1024, timeout: 60_000 }, (err, stdout, stderr) => {
+    execFile(cmd, args, { cwd, maxBuffer: 8 * 1024 * 1024, timeout: timeoutMs }, (err, stdout, stderr) => {
       if (err) {
         const detail = (stderr || stdout || err.message).trim().slice(0, 500);
         reject(new Error(detail || `${cmd} failed`));
@@ -111,5 +111,23 @@ export async function loadPullRequest(repo: string, pr: string | number): Promis
     title,
     url,
     jobs,
+  };
+}
+
+// Diff only — no title lookup — so a caller with a short deadline makes one gh call.
+export async function loadPullRequestDiff(
+  repo: string,
+  pr: string | number,
+  timeoutMs: number,
+): Promise<{ repo: string; pr: string; diff: string }> {
+  const parsed = parseRepoPr(repo, pr);
+  if (parsed.kind === "path") await assertGitRepo(parsed.repo);
+  const cwd = parsed.kind === "path" ? parsed.repo : undefined;
+  const repoArgs = parsed.kind === "slug" ? ["--repo", parsed.slug!] : [];
+  const diff = await run("gh", ["pr", "diff", String(parsed.number), ...repoArgs], cwd, timeoutMs);
+  return {
+    repo: parsed.kind === "slug" ? parsed.slug! : parsed.repo,
+    pr: String(parsed.number),
+    diff,
   };
 }

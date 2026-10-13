@@ -101,6 +101,18 @@ applies to every file.
 { "mcpServers": { "cheap-review": { "url": "http://<this-machine>:8878/cheap-review" } } }
 ```
 
+### `POST /quick-review` — pull-request review in under 2 seconds
+
+One tool, `review`, with the same `repo` and `pr` as `/cheap-review`. It fetches
+the diff once, keeps the first 1000 characters, and asks the warm
+`qwen2.5:1.5b` model (`QUICK_REVIEW_MODEL`) for two lines: what changed, then
+one attack. The whole call is budgeted at under 2 seconds. The 27B model is
+too slow for this route.
+
+```json
+{ "mcpServers": { "quick-review": { "url": "http://<this-machine>:8878/quick-review" } } }
+```
+
 **Document attachments:** add a `documents` array to the body and each item is
 converted to markdown (docling) and prepended as reference context before the
 conversation reaches the model:
