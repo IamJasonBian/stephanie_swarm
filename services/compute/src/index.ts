@@ -3,6 +3,7 @@
 //   POST /v1/agent/completions  — bounded MCP tool loop over a named harness profile
 //   GET  /v1/harness/profiles   — profiles this node can run
 //   POST /v1/execute            — Judge0 code execution (503 until JUDGE0_URL set)
+//   POST /cheap-review          — MCP; fast adversarial PR review, parallel by default
 //   GET  /health                — backend readiness
 import { Hono } from "hono";
 import { cors } from "hono/cors";
@@ -22,6 +23,7 @@ import { getProfile, loadProfiles } from "./harness/profiles.ts";
 import { mcpManager } from "./harness/mcpClient.ts";
 import { McpError } from "./harness/mcpClient.ts";
 import { runAgent } from "./harness/agentLoop.ts";
+import { handleCheapReview } from "./cheapReviewMcp.ts";
 
 const PORT = Number(process.env.PORT ?? 8878);
 const MODELS = ["hermes", "claude", "kimi", "qwen"] as const;
@@ -84,8 +86,11 @@ app.get("/health", async (c) => {
       profiles: profiles.map((p) => p.name),
     },
     basePrompt: basePrompt ? basename(BASE_PROMPT_FILE) : null,
+    cheapReview: "/cheap-review",
   });
 });
+
+app.all("/cheap-review", (c) => handleCheapReview(c.req.raw));
 
 app.get("/v1/models", async (c) => {
   const [hermes, claude, qwenReady] = await Promise.all([hermesHealthy(), claudeStatus(), qwen.healthy()]);

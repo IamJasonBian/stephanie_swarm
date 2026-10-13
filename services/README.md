@@ -85,6 +85,22 @@ Client-supplied system messages stack on top. Point `BASE_PROMPT_FILE` at a
 different file to swap the persona, or set `BASE_PROMPT_FILE=""` to disable.
 `GET /health` reports which base prompt is loaded.
 
+### `POST /cheap-review` — fast adversarial review of a pull request
+
+Same local Qwen3.5 as the other compute routes, built to be called often.
+One tool, `review`. It requires a git repo and a PR: `repo` is a local
+checkout path or GitHub `owner/name`, and `pr` is a number or a
+`github.com/.../pull/N` URL. Each changed file is explained in a few
+sentences, then attacked (one concrete break). `mode` defaults to `parallel`
+(up to 4 files at once, matching `MLX_MAX_SEQS`) so a batch returns quickly;
+`sequence` runs one file at a time and shows a short earlier attack to the
+next file. At most 8 files, 256 tokens each (cap 512). Optional `focus`
+applies to every file.
+
+```json
+{ "mcpServers": { "cheap-review": { "url": "http://<this-machine>:8878/cheap-review" } } }
+```
+
 **Document attachments:** add a `documents` array to the body and each item is
 converted to markdown (docling) and prepended as reference context before the
 conversation reaches the model:
