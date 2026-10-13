@@ -720,9 +720,10 @@ class MessageOrchestrator:
     ) -> None:
         """Long-running Claude call detached from the update handler.
 
-        Runs in a fresh session (never resumes or overwrites the user's main
-        claude_session_id) with the handoff entry's own max_seconds /
-        max_tool_calls, and replies to the original message when done.
+        Resumes the user's main session (so the handoff sees chat history) and
+        writes the resulting session id back, so follow-ups continue from it.
+        Uses the handoff entry's own max_seconds / max_tool_calls and replies
+        to the original message when done.
         """
         user_id = update.effective_user.id
         chat = update.message.chat
@@ -752,9 +753,9 @@ class MessageOrchestrator:
                     "current_directory", self.settings.approved_directory
                 ),
                 user_id=user_id,
-                session_id=None,
+                session_id=context.user_data.get("claude_session_id"),
                 on_stream=on_stream,
-                force_new=True,
+                force_new=bool(context.user_data.get("force_new_session")),
             ))
             _watch_task = asyncio.create_task(_tool_watchdog())
             try:
@@ -778,6 +779,8 @@ class MessageOrchestrator:
 
             if _run_task in _done:
                 claude_response = _run_task.result()
+                context.user_data["claude_session_id"] = claude_response.session_id
+                context.user_data["force_new_session"] = False
                 formatted_messages = ResponseFormatter(self.settings).format_claude_response(
                     claude_response.content
                 )
