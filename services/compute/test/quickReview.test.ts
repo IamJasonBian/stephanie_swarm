@@ -32,6 +32,7 @@ test("clipDiff keeps a short diff and marks a long one", () => {
 test("an Attack line is ready once it ends", () => {
   assert.equal(answerReady("Explain: subtracts."), false);
   assert.equal(answerReady("Attack: -"), false);
+  assert.equal(answerReady("Attack: - [high] add.ts"), false);
   assert.equal(answerReady("Explain: subtracts.\nAttack: - [high] add.ts: sign flipped."), true);
 });
 

@@ -67,7 +67,7 @@ export function answerReady(text: string): boolean {
   if (at < 0) return false;
   const line = text.slice(at).split("\n")[0].trim();
   if (line.length < "Attack: x".length) return false;
-  return text.slice(at).includes("\n") || /[.!?]/.test(line) || /no break found/i.test(line);
+  return text.slice(at).includes("\n") || /[.!?]$/.test(line) || /no break found[.!?]?$/i.test(line);
 }
 
 export function splitThink(content: string, reasoning: string): { think: string; answer: string } {
