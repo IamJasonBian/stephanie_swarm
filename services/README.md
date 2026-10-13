@@ -101,13 +101,15 @@ applies to every file.
 { "mcpServers": { "cheap-review": { "url": "http://<this-machine>:8878/cheap-review" } } }
 ```
 
-### `POST /quick-review` — pull-request review in under 2 seconds
+### `POST /quick-review` — a finished pull-request review, fast
 
 One tool, `review`, with the same `repo` and `pr` as `/cheap-review`. It fetches
-the diff once, keeps the first 1000 characters, and asks the warm
-`qwen2.5:1.5b` model (`QUICK_REVIEW_MODEL`) for two lines: what changed, then
-one attack. The whole call is budgeted at under 2 seconds. The 27B model is
-too slow for this route.
+the diff once, keeps the first 1000 characters, and returns the full
+`Explain` / `Attack` reply. `model` accepts `--fast`, `--3.5`, or `--latest`.
+The default is the warm `qwen2.5:1.5b` (`QUICK_REVIEW_MODEL`); set
+`QUICK_REVIEW_DEFAULT=--latest` to always prefer the newest model served by
+MLX. The newer model prints a `<think>` block, capped at 40 tokens, and then
+the answer.
 
 ```json
 { "mcpServers": { "quick-review": { "url": "http://<this-machine>:8878/quick-review" } } }

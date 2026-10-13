@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { clipDiff, createQuickReviewHandler } from "../src/quickReviewMcp.ts";
+import {
+  answerReady,
+  clipDiff,
+  createQuickReviewHandler,
+  FAST_MAX_TOKENS,
+  parseQuickModel,
+  QWEN35_MAX_TOKENS,
+} from "../src/quickReviewMcp.ts";
 import type { ChatRequest } from "../src/backends/ollama.ts";
 
 const ACCEPT = { "content-type": "application/json", accept: "application/json, text/event-stream" };
@@ -22,12 +29,25 @@ test("clipDiff keeps a short diff and marks a long one", () => {
   assert.match(clipped, /truncated/);
 });
 
+test("an Attack line is ready once it ends", () => {
+  assert.equal(answerReady("Explain: subtracts."), false);
+  assert.equal(answerReady("Attack: -"), false);
+  assert.equal(answerReady("Explain: subtracts.\nAttack: - [high] add.ts: sign flipped."), true);
+});
+
+test("model flags resolve fast and newest-model aliases", () => {
+  assert.equal(parseQuickModel("--fast"), "fast");
+  assert.equal(parseQuickModel("--3.5"), "3.5");
+  assert.equal(parseQuickModel("--latest"), "3.5");
+  assert.throws(() => parseQuickModel("--unknown"), /--fast, --3.5, or --latest/);
+});
+
 test("review reads one clipped diff and does not call the model without one", async () => {
   const seen: ChatRequest[] = [];
   let loads = 0;
   const handler = createQuickReviewHandler(async (req) => {
     seen.push(req);
-    return { choices: [{ message: { role: "assistant", content: "Explain: subtracts.\nAttack: - [high] add.ts: sign flipped" } }] };
+    return { content: "Explain: subtracts.\nAttack: - [high] add.ts: sign flipped.", reasoning: "" };
   }, async () => {
     loads++;
     return { repo: "acme/widget", pr: "14", diff: `${diff}${"y".repeat(5_000)}` };
@@ -51,12 +71,13 @@ test("review reads one clipped diff and does not call the model without one", as
     arguments: { repo: "acme/widget", pr: 14 },
   }))).json()) as { result: { isError?: boolean; content: { text: string }[] } };
   assert.equal(called.result.isError, undefined);
-  assert.match(called.result.content[0].text, /# quick-review \(\d+ms\)/);
+  assert.match(called.result.content[0].text, /# quick-review \(qwen2\.5:1\.5b, \d+ms\)/);
   assert.match(called.result.content[0].text, /Explain: subtracts/);
+  assert.doesNotMatch(called.result.content[0].text, /<think>/);
   assert.equal(seen.length, 1);
   assert.match(String(seen[0].messages[0].content), /Explain:/);
   assert.match(String(seen[0].messages[0].content), /Attack:/);
-  assert.equal(seen[0].max_tokens, 40);
+  assert.equal(seen[0].max_tokens, FAST_MAX_TOKENS);
   assert.equal(seen[0].temperature, 0);
   const prompt = String(seen[0].messages[1].content);
   assert.match(prompt, /return a - b/);
@@ -79,7 +100,7 @@ test("a slow diff load returns a budget error and skips the model", async () => 
   let chats = 0;
   const handler = createQuickReviewHandler(async () => {
     chats++;
-    return { choices: [{ message: { role: "assistant", content: "nope" } }] };
+    return { content: "nope", reasoning: "" };
   }, async () => {
     await new Promise((r) => setTimeout(r, 80));
     return { repo: "acme/widget", pr: "1", diff };
@@ -91,4 +112,25 @@ test("a slow diff load returns a budget error and skips the model", async () => 
   assert.equal(result.result.isError, true);
   assert.match(result.result.content[0].text, /2s budget/);
   assert.equal(chats, 0);
+});
+
+test("--3.5 uses Qwen3.5 and prints the thinking block", async () => {
+  const seen: string[] = [];
+  const handler = createQuickReviewHandler(async (req, _signal, model) => {
+    seen.push(`${model}:${req.max_tokens}`);
+    return {
+      reasoning: "The sign flipped from add to subtract.",
+      content: "Explain: add() now subtracts.\nAttack: - [high] add.ts: the sign flipped.",
+    };
+  }, async () => ({ repo: "acme/widget", pr: "14", diff }));
+  const called = (await (await handler(rpc("tools/call", {
+    name: "review",
+    arguments: { repo: "acme/widget", pr: 14, model: "--3.5" },
+  }))).json()) as { result: { isError?: boolean; content: { text: string }[] } };
+  assert.equal(called.result.isError, undefined);
+  assert.deepEqual(seen, [`3.5:${QWEN35_MAX_TOKENS}`]);
+  const text = called.result.content[0].text;
+  assert.match(text, /Qwen3\.5/);
+  assert.match(text, /<think>\nThe sign flipped from add to subtract\.\n<\/think>/);
+  assert.match(text, /Attack: - \[high\] add\.ts: the sign flipped\./);
 });

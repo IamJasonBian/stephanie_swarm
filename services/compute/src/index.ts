@@ -4,7 +4,7 @@
 //   GET  /v1/harness/profiles   — profiles this node can run
 //   POST /v1/execute            — Judge0 code execution (503 until JUDGE0_URL set)
 //   POST /cheap-review          — MCP; fast adversarial PR review, parallel by default
-//   POST /quick-review          — MCP; one-pass PR review that returns in under 2 seconds
+//   POST /quick-review          — MCP; fast PR review, with --3.5/--latest quality mode
 //   GET  /health                — backend readiness
 import { Hono } from "hono";
 import { cors } from "hono/cors";
