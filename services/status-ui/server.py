@@ -803,7 +803,11 @@ class Handler(BaseHTTPRequestHandler):
     def _chat_engine(self, messages: list[dict], t0: float) -> dict:
         lessons = lessons_block()
         msgs = ([{"role": "system", "content": lessons}] if lessons else []) + messages
-        body = json.dumps({"model": "qwen", "profile": PROFILE_NAME, "messages": msgs, "max_tokens": 1400}).encode()
+        # Tighter than the profile (callers may only tighten): each harness round
+        # re-reads a 4-7k token prompt, and compute aborts any single model call
+        # after 300 s, so long answers under contention never finish.
+        body = json.dumps({"model": "qwen", "profile": PROFILE_NAME, "messages": msgs, "max_tokens": 700,
+                           "limits": {"max_tool_rounds": 2}}).encode()
         req = urllib.request.Request(f"{COMPUTE}/v1/agent/completions", body, {
             "Content-Type": "application/json", "x-harness-token": env_value("HARNESS_TOKEN") or ""})
         result: dict = {}
