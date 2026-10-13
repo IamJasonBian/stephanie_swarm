@@ -1,4 +1,7 @@
 {
+  "take_a_break": {
+    "regex": "(?i)^\\s*(?:penguins?,?\\s+)?(?:please\\s+)?(?:take\\s+a\\s+break|break\\s+time|stop\\s+(?:all\\s+)?(?:the\\s+)?(?:handoffs?|long[\\s\\-]*(?:budget|running)\\s+(?:calls?|tasks?))|🐧\\s*💤)[\\s.!🐧💤]*$"
+  },
   "patterns": [
     {
       "regex": "(?i)\\b(who|what)\\s+(are|r)\\s+(you|u)\\b|tell me about yourself|what'?s your name|are you (claude|ai|a bot|a penguin|stephanie)|introduce yourself",
@@ -83,10 +86,19 @@
       "response": "🐧 This might make the penguins work too hard."
     }
   ],
+  "handoff": [
+    {
+      "regex": "(?i)\\b(?:ultra|mega|deep)[\\s\\-_]*think(?:ing)?\\b|\\bthink(?:ing)?[\\s\\-_]*(?:(?:really|very|super|extra|extremely|real|so|long\\s+and|rea+l+y)[\\s\\-_]+)*(?:hard(?:er|est)?|deep(?:ly|er)?|carefully|long(?:er)?|it\\s+through|this\\s+through)\\b|\\bhard[\\s\\-_]+think(?:ing)?\\b",
+      "response": "🐧 💧💧💧😮‍💨",
+      "max_seconds": 1800,
+      "max_tool_calls": 75,
+      "snow_response": "🧊 Even the handoff used too much snow. (30-min / 75-tool cap reached)"
+    }
+  ],
   "limits": {
     "max_seconds": 300,
     "max_tool_calls": 15,
-    "timeout_response": "🧊 This is using too much snow. (5-min wall-clock cap reached — request aborted)",
-    "tool_limit_response": "🧊 This is using too much snow. (15 tool-call cap reached — Claude went down a rabbit hole)"
+    "timeout_response": "🧊 This is using too much snow. (5-min wall-clock cap reached — request aborted) Say \"think hard\" to hand it off to a long-running call 🐧 💧💧💧😮‍💨",
+    "tool_limit_response": "🧊 This is using too much snow. (15 tool-call cap reached — Claude went down a rabbit hole) Say \"think hard\" to hand it off to a long-running call 🐧 💧💧💧😮‍💨"
   }
 }
