@@ -104,6 +104,8 @@ class MessageOrchestrator:
     def __init__(self, settings: Settings, deps: Dict[str, Any]):
         self.settings = settings
         self.deps = deps
+        # Detached "think hard" handoff runs — held so they aren't GC'd mid-flight.
+        self._handoff_tasks: "set[asyncio.Task[None]]" = set()
 
     def _inject_deps(self, handler: Callable) -> Callable:  # type: ignore[type-arg]
         """Wrap handler to inject dependencies into context.bot_data."""
@@ -291,6 +293,8 @@ class MessageOrchestrator:
             ("status", self.agentic_status),
             ("verbose", self.agentic_verbose),
             ("repo", self.agentic_repo),
+            ("take_a_break", self.agentic_take_a_break),
+            ("break", self.agentic_take_a_break),
         ]
         if self.settings.enable_project_threads:
             handlers.append(("sync_threads", command.sync_threads))
@@ -388,6 +392,7 @@ class MessageOrchestrator:
                 BotCommand("status", "Show session status"),
                 BotCommand("verbose", "Set output verbosity (0/1/2)"),
                 BotCommand("repo", "List repos / switch workspace"),
+                BotCommand("take_a_break", "🐧💤 Kill all long-budget handoff calls"),
             ]
             if self.settings.enable_project_threads:
                 commands.append(BotCommand("sync_threads", "Sync project topics"))
@@ -687,6 +692,159 @@ class MessageOrchestrator:
 
         return _on_stream
 
+    def _kill_handoffs(self) -> int:
+        """Cancel every in-flight long-budget handoff call. Returns how many."""
+        live = [t for t in self._handoff_tasks if not t.done()]
+        for t in live:
+            t.cancel()
+        return len(live)
+
+    async def agentic_take_a_break(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """/take_a_break — kill all long-budget handoff calls on this bot."""
+        killed = self._kill_handoffs()
+        logger.info("take_a_break", killed=killed, user_id=update.effective_user.id)
+        await update.message.reply_text(
+            f"🐧💤 Taking a break — stopped {killed} long-budget call(s)."
+            if killed
+            else "🐧💤 Nothing to stop — no long-budget calls running."
+        )
+
+    async def _run_handoff(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        message_text: str,
+        cfg: Dict[str, Any],
+    ) -> None:
+        """Long-running Claude call detached from the update handler.
+
+        Runs in a fresh session (never resumes or overwrites the user's main
+        claude_session_id) with the handoff entry's own max_seconds /
+        max_tool_calls, and replies to the original message when done.
+        """
+        user_id = update.effective_user.id
+        chat = update.message.chat
+        max_seconds = cfg.get("max_seconds", 1800)
+        max_tool_calls = cfg.get("max_tool_calls", 75)
+        snow_response = cfg.get("snow_response", "🧊 Even the handoff used too much snow.")
+
+        progress_msg = await update.message.reply_text("💧 Working (handoff)...")
+        tool_log: List[Dict[str, Any]] = []
+        start_time = time.time()
+        on_stream = self._make_stream_callback(
+            self._get_verbose_level(context), progress_msg, tool_log, start_time
+        )
+        heartbeat = self._start_typing_heartbeat(chat)
+
+        async def _tool_watchdog() -> None:
+            while sum(1 for e in tool_log if e.get("kind") == "tool") <= max_tool_calls:
+                await asyncio.sleep(2)
+
+        claude_integration = context.bot_data.get("claude_integration")
+        from .utils.formatting import FormattedMessage, ResponseFormatter
+
+        try:
+            _run_task = asyncio.create_task(claude_integration.run_command(
+                prompt=message_text,
+                working_directory=context.user_data.get(
+                    "current_directory", self.settings.approved_directory
+                ),
+                user_id=user_id,
+                session_id=None,
+                on_stream=on_stream,
+                force_new=True,
+            ))
+            _watch_task = asyncio.create_task(_tool_watchdog())
+            try:
+                _done, _ = await asyncio.wait(
+                    {_run_task, _watch_task},
+                    timeout=max_seconds,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            except asyncio.CancelledError:
+                # /take_a_break — stop the Claude call too, not just the wait.
+                _run_task.cancel()
+                heartbeat.cancel()
+                try:
+                    await progress_msg.edit_text("🐧💤 Handoff stopped — penguins taking a break.")
+                except Exception:
+                    pass
+                logger.info("Handoff killed by take_a_break", user_id=user_id)
+                raise
+            finally:
+                _watch_task.cancel()
+
+            if _run_task in _done:
+                claude_response = _run_task.result()
+                formatted_messages = ResponseFormatter(self.settings).format_claude_response(
+                    claude_response.content
+                )
+                storage = context.bot_data.get("storage")
+                if storage:
+                    try:
+                        await storage.save_claude_interaction(
+                            user_id=user_id,
+                            session_id=claude_response.session_id,
+                            prompt=message_text,
+                            response=claude_response,
+                            ip_address=None,
+                        )
+                    except Exception as e:
+                        logger.warning("Failed to log handoff interaction", error=str(e))
+            else:
+                _run_task.cancel()
+                try:
+                    await _run_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                formatted_messages = [FormattedMessage(snow_response)]
+                logger.info(
+                    "Handoff aborted by no-llm limits",
+                    reason="timeout" if not _done else "tool_limit",
+                    max_seconds=max_seconds,
+                    max_tool_calls=max_tool_calls,
+                    user_id=user_id,
+                )
+        except Exception as e:
+            logger.error("Handoff failed", error=str(e), user_id=user_id)
+            from .handlers.message import _format_error_message
+
+            formatted_messages = [
+                FormattedMessage(_format_error_message(e), parse_mode="HTML")
+            ]
+        finally:
+            heartbeat.cancel()
+
+        try:
+            await progress_msg.delete()
+        except Exception:
+            pass
+        for i, message in enumerate(formatted_messages):
+            if not message.text or not message.text.strip():
+                continue
+            reply_to = update.message.message_id if i == 0 else None
+            try:
+                await update.message.reply_text(
+                    message.text,
+                    parse_mode=message.parse_mode,
+                    reply_to_message_id=reply_to,
+                )
+            except Exception:
+                try:
+                    await update.message.reply_text(
+                        message.text, reply_to_message_id=reply_to
+                    )
+                except Exception as e:
+                    logger.warning("Handoff reply failed", error=str(e))
+            await asyncio.sleep(0.5)
+        logger.info(
+            "Handoff completed",
+            user_id=user_id,
+            duration_s=round(time.time() - start_time, 1),
+        )
+
     async def agentic_text(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -715,20 +873,46 @@ class MessageOrchestrator:
                 await progress_msg.edit_text(f"⏱️ {limit_message}")
                 return
 
-        # MOCK_RESPONSES.json (per-bot cwd) drives THREE deterministic, no-LLM behaviors:
+        # Classifier file (per-bot cwd) drives THREE deterministic, no-LLM behaviors:
         #   1. patterns[]  → short-circuit: edit progress_msg with canned response, no Claude call
         #   2. preflight[] → send extra warning message, then CONTINUE to Claude
         #   3. limits{}    → max_seconds + max_tool_calls watchdog around the Claude call below
         # First matching regex per section wins. File is reread on every message,
         # so patterns/limits are tunable without bot restart.
+        #
+        # Path resolution: ~/.config/stephanie-network/classifier-registry.json
+        #   - default key (str)           → fallback path relative to cwd
+        #   - bots[<cwd-name>] (str|null) → per-workdir override; null = no classifier
+        #   - no registry / no entry      → use legacy "classifier/INBOUND_RESPONSES.json"
         mock_cfg: Dict[str, Any] = {}
-        mock_path = Path.cwd() / "MOCK_RESPONSES.json"
-        if mock_path.exists():
+        _classifier_rel = "classifier/INBOUND_RESPONSES.json"
+        _registry_path = Path("/Users/jasonzb/.config/stephanie-network/classifier-registry.json")
+        if _registry_path.exists():
+            try:
+                import json as _json
+                _registry = _json.loads(_registry_path.read_text(encoding="utf-8"))
+                if isinstance(_registry.get("default"), str):
+                    _classifier_rel = _registry["default"]
+                _bots_map = _registry.get("bots", {})
+                _cwd_name = Path.cwd().name
+                if _cwd_name in _bots_map:
+                    _classifier_rel = _bots_map[_cwd_name]  # may be None to disable
+            except Exception as _exc:  # noqa: BLE001
+                logger.warning("classifier-registry.json read failed", error=str(_exc))
+        mock_path = (Path.cwd() / _classifier_rel) if _classifier_rel else None
+        if mock_path is not None and mock_path.exists():
             try:
                 import json as _json
                 mock_cfg = _json.loads(mock_path.read_text(encoding="utf-8"))
             except Exception as _exc:  # noqa: BLE001 — never break the bot
-                logger.warning("MOCK_RESPONSES.json read failed", error=str(_exc))
+                logger.warning("classifier file read failed", path=str(mock_path), error=str(_exc))
+
+        # (0) Take a break — whole-message match kills all handoff calls, no Claude.
+        _brk = mock_cfg.get("take_a_break", {})
+        if _brk.get("regex") and re.search(_brk["regex"], message_text):
+            await progress_msg.delete()
+            await self.agentic_take_a_break(update, context)
+            return
 
         # (1) Short-circuit response patterns
         for _entry in mock_cfg.get("patterns", []):
@@ -755,6 +939,21 @@ class MessageOrchestrator:
                 except Exception as _exc:  # noqa: BLE001
                     logger.warning("Preflight send failed", error=str(_exc))
                 break
+
+        # (2b) Handoff — "think hard" & permutations. Ack with the handoff emoji,
+        # then run Claude as a detached call (fresh session, bigger snow budget)
+        # so this handler returns and the bot keeps serving other messages.
+        for _entry in mock_cfg.get("handoff", []):
+            _pat = _entry.get("regex", "")
+            if _pat and re.search(_pat, message_text):
+                await progress_msg.edit_text(_entry.get("response", "🐧 💧💧💧😮‍💨"))
+                _task = asyncio.create_task(
+                    self._run_handoff(update, context, message_text, _entry)
+                )
+                self._handoff_tasks.add(_task)
+                _task.add_done_callback(self._handoff_tasks.discard)
+                logger.info("Handoff started", pattern=_pat, user_id=user_id)
+                return
 
         # (3) Limits — read once, applied by the watchdog wrapping run_command below.
         _limits = mock_cfg.get("limits", {}) if isinstance(mock_cfg, dict) else {}
