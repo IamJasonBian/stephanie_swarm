@@ -24,24 +24,40 @@ Healthchecks dashboard should be green: https://healthchecks.io/checks/cac90552-
 
 ## Get into the Mac when off-site
 
-Two machines on tailnet `tailcd3237` (account `jason.bian75@`):
+Three machines on tailnet `tailcd3237` (account `jason.bian75@`):
 
-| Machine | Tailscale name | IP |
-|---|---|---|
-| Jason's MacBook Pro (2) — dev | `jasons-macbook-pro-2-1` | `100.82.62.104` |
-| jasonzb's MacBook Pro (`Mac.lan`, LAN `192.168.1.9`) | `coach-in-a-cave` | `100.70.40.70` |
-
-From the dev Mac:
+| Machine | Tailscale name | IP | LAN |
+|---|---|---|---|
+| Jason's MacBook Pro (3) — bot leader (`Jasons-MBP-2.lan`) | `jasons-mbp-2-1` | `100.96.223.120` | `192.168.1.102` |
+| jasonzb's MacBook Pro (`Mac.lan`) | `coach-in-a-cave` | `100.70.40.70` | `192.168.1.9` |
+| Jason's MacBook Pro (2) — dev | `jasons-macbook-pro-2-1` | `100.82.62.104` | `192.168.1.224` |
 
 ```bash
+# from any tailcd3237 device:
+ssh jasonzb@jasons-mbp-2-1
 ssh jasonzb@coach-in-a-cave
 ```
 
-That login is Tailscale SSH. On coach-in-a-cave it is the userspace daemon (`RunSSH` on, socket `~/.local/share/tailscale/tailscaled.sock`, hostname `coach-in-a-cave`), and the remote identity is `jason.bian75@gmail.com`. OpenSSH is not listening, so `~/.ssh/authorized_keys` is not used. The dev Mac has `~/.ssh/id_ed25519` (`SHA256:4wioyU67idonUIkGthLTgh1+jPPyAvck3CxveTVNCNI`); it is not what authenticates this hop.
+The bot leader and coach-in-a-cave each run the Tailscale app on a second tailnet (`tail70b2c1`, `IamJasonBian@github`). Their `tailcd3237` node is a separate user-level daemon with Tailscale SSH on:
 
-`coach-in-a-cave` also runs the Tailscale app on a different tailnet (`jasonzbs-macbook-pro`, `100.105.222.78`, `tail70b2c1`). `tailscale status` with no `--socket` shows that tailnet. Use the userspace socket above for the `tailcd3237` node.
+- LaunchAgent `~/Library/LaunchAgents/com.apollo.tailscaled.plist`
+- state `~/.local/share/tailscale`, socket `~/.local/share/tailscale/tailscaled.sock`
+- SOCKS5 on `127.0.0.1:1055` (userspace networking, so outbound tailnet traffic must use it)
 
-`100.122.45.18` is not a peer. `jasons-mbp-2` (`100.66.238.59`) is offline.
+`tailscale status` with no `--socket` shows the app's tailnet, not this one:
+
+```bash
+tailscale --socket=$HOME/.local/share/tailscale/tailscaled.sock status
+```
+
+The bot leader runs macOS 14.3, which Homebrew no longer builds bottles for. Its `tailscale`/`tailscaled` in `~/.local/bin` are cross-built from another Mac:
+
+```bash
+GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 GOFLAGS=-trimpath \
+  go install tailscale.com/cmd/tailscale@v1.104.4 tailscale.com/cmd/tailscaled@v1.104.4
+```
+
+`jasons-mbp-2` (`100.66.238.59`) is the bot leader's old node, offline since Oct 13. Delete it in the admin console, then rename `jasons-mbp-2-1` back to `jasons-mbp-2`.
 
 If Tailscale SSH is down (Mac frozen, network out): power-cycle via the smart plug from your phone, then SSH back in once the Mac is up again. `pmset autorestart 1` brings the Mac up automatically when power returns.
 
