@@ -24,10 +24,24 @@ Healthchecks dashboard should be green: https://healthchecks.io/checks/cac90552-
 
 ## Get into the Mac when off-site
 
+Two machines on tailnet `tailcd3237` (account `jason.bian75@`):
+
+| Machine | Tailscale name | IP |
+|---|---|---|
+| Jason's MacBook Pro (2) — dev | `jasons-macbook-pro-2-1` | `100.82.62.104` |
+| jasonzb's MacBook Pro (`Mac.lan`, LAN `192.168.1.9`) | `coach-in-a-cave` | `100.70.40.70` |
+
+From the dev Mac:
+
 ```bash
-# from phone or any other tailnet device:
-ssh jasonzb@jasons-mbp-2.tailcd3237.ts.net
+ssh jasonzb@coach-in-a-cave
 ```
+
+That login is Tailscale SSH. On coach-in-a-cave it is the userspace daemon (`RunSSH` on, socket `~/.local/share/tailscale/tailscaled.sock`, hostname `coach-in-a-cave`), and the remote identity is `jason.bian75@gmail.com`. OpenSSH is not listening, so `~/.ssh/authorized_keys` is not used. The dev Mac has `~/.ssh/id_ed25519` (`SHA256:4wioyU67idonUIkGthLTgh1+jPPyAvck3CxveTVNCNI`); it is not what authenticates this hop.
+
+`coach-in-a-cave` also runs the Tailscale app on a different tailnet (`jasonzbs-macbook-pro`, `100.105.222.78`, `tail70b2c1`). `tailscale status` with no `--socket` shows that tailnet. Use the userspace socket above for the `tailcd3237` node.
+
+`100.122.45.18` is not a peer. `jasons-mbp-2` (`100.66.238.59`) is offline.
 
 If Tailscale SSH is down (Mac frozen, network out): power-cycle via the smart plug from your phone, then SSH back in once the Mac is up again. `pmset autorestart 1` brings the Mac up automatically when power returns.
 
