@@ -24,40 +24,26 @@ Healthchecks dashboard should be green: https://healthchecks.io/checks/cac90552-
 
 ## Get into the Mac when off-site
 
-Three machines on tailnet `tailcd3237` (account `jason.bian75@`):
-
-| Machine | Tailscale name | IP | LAN |
-|---|---|---|---|
-| Jason's MacBook Pro (3) — bot leader (`Jasons-MBP-2.lan`) | `jasons-mbp-2-1` | `100.96.223.120` | `192.168.1.102` |
-| jasonzb's MacBook Pro (`Mac.lan`) | `coach-in-a-cave` | `100.70.40.70` | `192.168.1.9` |
-| Jason's MacBook Pro (2) — dev | `jasons-macbook-pro-2-1` | `100.82.62.104` | `192.168.1.224` |
+Every swarm Mac joins one tailnet with Tailscale SSH on. From any device on it:
 
 ```bash
-# from any tailcd3237 device:
-ssh jasonzb@jasons-mbp-2-1
-ssh jasonzb@coach-in-a-cave
+ssh <user>@<tailscale-name>
 ```
 
-The bot leader and coach-in-a-cave each run the Tailscale app on a second tailnet (`tail70b2c1`, `IamJasonBian@github`). Their `tailcd3237` node is a separate user-level daemon with Tailscale SSH on:
+If a Mac also runs the Tailscale app on another tailnet, add the swarm tailnet as a second, user-level daemon instead of switching the app:
 
-- LaunchAgent `~/Library/LaunchAgents/com.apollo.tailscaled.plist`
-- state `~/.local/share/tailscale`, socket `~/.local/share/tailscale/tailscaled.sock`
-- SOCKS5 on `127.0.0.1:1055` (userspace networking, so outbound tailnet traffic must use it)
+- LaunchAgent `~/Library/LaunchAgents/com.apollo.tailscaled.plist` runs `tailscaled --tun=userspace-networking --socks5-server=127.0.0.1:1055 --statedir=$HOME/.local/share/tailscale --socket=$HOME/.local/share/tailscale/tailscaled.sock`
+- join: `tailscale --socket=$HOME/.local/share/tailscale/tailscaled.sock up --ssh --hostname=<name>`
+- plain `tailscale status` shows the app's tailnet; pass `--socket=...` to see the swarm one
+- outbound swarm traffic from that Mac goes through the SOCKS proxy, e.g. `ssh -o ProxyCommand="nc -X 5 -x 127.0.0.1:1055 %h %p" ...`
 
-`tailscale status` with no `--socket` shows the app's tailnet, not this one:
+If Homebrew can't install Tailscale (old macOS, no bottle), build it on another Mac and copy both binaries to `~/.local/bin`:
 
 ```bash
-tailscale --socket=$HOME/.local/share/tailscale/tailscaled.sock status
+GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go install tailscale.com/cmd/tailscale@latest tailscale.com/cmd/tailscaled@latest
 ```
 
-The bot leader runs macOS 14.3, which Homebrew no longer builds bottles for. Its `tailscale`/`tailscaled` in `~/.local/bin` are cross-built from another Mac:
-
-```bash
-GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 GOFLAGS=-trimpath \
-  go install tailscale.com/cmd/tailscale@v1.104.4 tailscale.com/cmd/tailscaled@v1.104.4
-```
-
-`jasons-mbp-2` (`100.66.238.59`) is the bot leader's old node, offline since Oct 13. Delete it in the admin console, then rename `jasons-mbp-2-1` back to `jasons-mbp-2`.
+SSH unreachable? Check the Mac is on the swarm tailnet (`tailscale status` from another node), not just online on a different one. Delete stale offline nodes in the admin console so names don't get a `-1` suffix. On the same Wi-Fi, `ssh <user>@<lan-ip>` works as a fallback.
 
 If Tailscale SSH is down (Mac frozen, network out): power-cycle via the smart plug from your phone, then SSH back in once the Mac is up again. `pmset autorestart 1` brings the Mac up automatically when power returns.
 
