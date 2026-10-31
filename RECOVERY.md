@@ -24,10 +24,26 @@ Healthchecks dashboard should be green: https://healthchecks.io/checks/cac90552-
 
 ## Get into the Mac when off-site
 
+Every swarm Mac joins one tailnet with Tailscale SSH on. From any device on it:
+
 ```bash
-# from phone or any other tailnet device:
-ssh jasonzb@jasons-mbp-2.tailcd3237.ts.net
+ssh <user>@<tailscale-name>
 ```
+
+If a Mac also runs the Tailscale app on another tailnet, add the swarm tailnet as a second, user-level daemon instead of switching the app:
+
+- LaunchAgent `~/Library/LaunchAgents/com.apollo.tailscaled.plist` runs `tailscaled --tun=userspace-networking --socks5-server=127.0.0.1:1055 --statedir=$HOME/.local/share/tailscale --socket=$HOME/.local/share/tailscale/tailscaled.sock`
+- join: `tailscale --socket=$HOME/.local/share/tailscale/tailscaled.sock up --ssh --hostname=<name>`
+- plain `tailscale status` shows the app's tailnet; pass `--socket=...` to see the swarm one
+- outbound swarm traffic from that Mac goes through the SOCKS proxy, e.g. `ssh -o ProxyCommand="nc -X 5 -x 127.0.0.1:1055 %h %p" ...`
+
+If Homebrew can't install Tailscale (old macOS, no bottle), build it on another Mac and copy both binaries to `~/.local/bin`:
+
+```bash
+GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go install tailscale.com/cmd/tailscale@latest tailscale.com/cmd/tailscaled@latest
+```
+
+SSH unreachable? Check the Mac is on the swarm tailnet (`tailscale status` from another node), not just online on a different one. Delete stale offline nodes in the admin console so names don't get a `-1` suffix. On the same Wi-Fi, `ssh <user>@<lan-ip>` works as a fallback.
 
 If Tailscale SSH is down (Mac frozen, network out): power-cycle via the smart plug from your phone, then SSH back in once the Mac is up again. `pmset autorestart 1` brings the Mac up automatically when power returns.
 
