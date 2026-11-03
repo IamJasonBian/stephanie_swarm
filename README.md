@@ -86,3 +86,23 @@ for plist in ~/Library/LaunchAgents/com.jasonzb.stephanie-{uptime,uptime-gist,bo
   launchctl load -w "$plist" 2>/dev/null
 done
 ```
+
+## Remote tasks (headless Claude, survives the laptop sleeping)
+`bin/remote-task.sh` runs one supervised `claude -p` task detached on this node: fresh clone
+into `~/work/<job>`, allow-listed tools (read/edit, git, `gh pr`, tests; no merge/deploy),
+resumed with `--continue` until an optional done-check passes, `DEADLINE_SECS` (7200) or
+`MAX_PASSES` (10). Logs, brief and status land in `~/work/logs/remote-tasks/<job>/`; the clone
+is removed at the end only if every branch is pushed and the tree is clean.
+
+```bash
+# from the laptop
+scp brief.md coach-in-a-cave:~/work/my-job-brief.md
+ssh coach-in-a-cave 'nohup ~/stephanie_swarm/bin/remote-task.sh my-job IamJasonBian/allocation-engine-2.0 \
+  ~/work/my-job-brief.md "gh pr list --repo IamJasonBian/allocation-engine-2.0 --head my-branch --state open --json number -q length | grep -qv ^0$" \
+  >/dev/null 2>&1 </dev/null & disown'
+
+ssh coach-in-a-cave '~/stephanie_swarm/bin/remote-task-status.sh my-job'     # status
+ssh coach-in-a-cave 'tail -f ~/work/logs/remote-tasks/my-job/my-job.log'     # raw stream-json
+ssh coach-in-a-cave 'pkill -f "remote-task.sh my-job"'                       # stop
+```
+Never restart the swarm launchd services to stop a task — kill the task by its job name.
