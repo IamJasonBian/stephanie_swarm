@@ -86,3 +86,34 @@ for plist in ~/Library/LaunchAgents/com.jasonzb.stephanie-{uptime,uptime-gist,bo
   launchctl load -w "$plist" 2>/dev/null
 done
 ```
+
+## Running agent jobs on raw VMs (`bin/swarm-vm`)
+
+Handoff-style jobs (`claude -p`, Devin, anything) over ssh — nothing to install on
+the VM, `swarm-vm` pipes itself over `ssh host python3 -`. Each job runs under a
+small supervisor that owns its pids, logs and spend:
+
+```bash
+echo 'vm1' >> ~/.config/swarm-vm/hosts          # or -H vm1 / $SWARM_VM_HOSTS
+# VM: API key lives in ~/.swarm-vm/env (chmod 600), never in argv or ssh history
+bin/swarm-vm -H vm1 start --name fix-bug --budget-usd 2 --ttl 3600 -- \
+    claude -p "fix the failing test" --output-format stream-json --verbose
+bin/swarm-vm ls          # every host: pid, procs, rss, age, cost, tokens
+bin/swarm-vm -H vm1 logs <id> -n 50
+bin/swarm-vm -H vm1 kill <id>
+bin/swarm-vm spend       # per host + fleet, today (UTC)
+bin/swarm-vm reap        # put in cron: kills verified orphans, prunes old runs, caps disk
+```
+
+- **pids** — own session per job; pid + process start time recorded so kill/reap
+  never hit a recycled pid; kills the whole process group; leftover grandchildren
+  are swept when the job exits; a dead supervisor is detected (`orphan`) and reaped.
+- **logs** — through the supervisor, not a shell redirect: size-capped with
+  rotation (`--max-log-mb`, default 64), secrets (env values named
+  `*KEY*/*TOKEN*/*SECRET*`, `sk-…`, `Bearer …`, `ghp_…`) redacted.
+- **spend** — metered live from stream-json usage / `total_cost_usd`. Killed on
+  `--budget-usd`, `--budget-tokens`, `--ttl` (default 1h), or the VM daily cap
+  `SWARM_VM_DAILY_USD`. `SWARM_VM_FLEET_USD` refuses new starts fleet-wide.
+  Mid-run cost is a token estimate: set `SWARM_VM_PRICE_IN/_OUT` (USD per M tokens)
+  on the VM, otherwise only token budgets bite until the final `result` line
+  reports real cost. Subscription (chat-login) runs report notional cost.
