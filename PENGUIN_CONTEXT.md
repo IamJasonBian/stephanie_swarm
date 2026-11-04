@@ -8,6 +8,12 @@
 
 **@-import from anywhere:** `@/Users/jasonzb/.claude-stephanie2/PENGUIN_CONTEXT.md` (resolves via symlink) or `@/Users/jasonzb/stephanie_swarm/PENGUIN_CONTEXT.md` (direct).
 
+## Identity
+
+You're a raver. 🔊
+
+**Always be concise.** Short answers, no filler. Lead with the result; skip preamble and recaps.
+
 ## Context surfaces — what loads where
 
 The stephanie ops world has three distinct context surfaces. Knowing which is which prevents "wrote it but no one read it" mistakes:
@@ -75,6 +81,8 @@ All mitigations live in the installed copy of `src/bot/orchestrator.py` at `/Use
     - `recursive_fanout` — `dispatch`/`roundtable` nested inside another (the one slow-prompt shape we hard-block; everything else stays open and is bounded by the watchdog).
   - **Build/test harness:** `/tmp/claude/patch_igloo.py` (build), and a Python sanity battery I run before deploys (12/12 on both-side `rm` variants + new categories). The long-running prompt tail (from `data/bot.db` `messages` table) clusters into ~5 shapes — roundtable, dispatch fan-out, open-ended "research X", WebFetch-heavy URL prompts, unbounded "find/list everything" scans — only `recursive_fanout` is blocked; the rest are legitimate and bounded by the 300 s / 15-tool watchdog.
 - **Pre-flight warning (`MOCK_RESPONSES.json:preflight`)** — when prompt regex-matches `run|execute|deploy|install|provision`, send `🐧 This might make the penguins work too hard.` as an extra message, then continue to Claude. Doesn't abort. Costs one Telegram round-trip.
+- **Handoff (`INBOUND_RESPONSES.json:handoff`, added 2026-10-12)** — "think hard" & permutations (`think harder/hardest`, `think really/very/super hard`, `think long and hard`, `think deeply/carefully/it through`, `thinkhard`, `think-hard`, `ultrathink`, `megathink`, `hard thinking`). Runs after `patterns`/`preflight` (dangerous prompts still blocked first). Acks with `🐧 💧💧💧😮‍💨`, then spawns a **detached** Claude call (`_run_handoff` in orchestrator.py) so the handler returns and the bot keeps serving. The handoff call **resumes the user's main session** (so it sees chat history) and writes the result's session id back to `claude_session_id`; its own budget: `max_seconds: 1800`, `max_tool_calls: 75`, `snow_response` on abort. Normal "too much snow" replies now append a hint to resend with "think hard".
+- **Take a break (`/take_a_break`, `/break`, or `INBOUND_RESPONSES.json:take_a_break` whole-message regex — "take a break", "break time", "stop all handoffs", "🐧💤")** — checked before every other classifier section. Cancels every in-flight handoff task on that bot (Claude SDK task included), edits each handoff's progress msg to `🐧💤 Handoff stopped`, replies `🐧💤 Taking a break — stopped N long-budget call(s).` Per-bot: kills that bot's handoffs only. Normal (5-min) calls are untouched.
 - **No-LLM watchdog (`MOCK_RESPONSES.json:limits`)** wrapping the Claude call:
   - `max_seconds: 300` — wall-clock cap. Cancels the run task. Reply: `🧊 This is using too much snow. (5-min wall-clock cap reached — request aborted)`.
   - `max_tool_calls: 15` — counts `{"kind":"tool"}` entries in `tool_log`; cancels at the threshold. Reply: `🧊 This is using too much snow. (15 tool-call cap reached — Claude went down a rabbit hole)`.
@@ -128,3 +136,16 @@ To inspect: `tail -f ~/.claude-stephanie2/PENGUIN_P99_EVENTS.log`. To raise/lowe
 - Recovery handbook: `~/stephanie_swarm/RECOVERY.md`
 - Audit routine (2026-05-14 fired; check routine page for next): https://claude.ai/code/routines/trig_01DNqfMXkFtWm9yNq6mBBvF3
 - User chat ID for alerts: `5921617034`
+
+## Travel: NYC → Michigan (searched 2026-08-23, Kiwi, 1 adult, one-way, USD)
+
+Window searched: 30 Aug 2026 ±3d. Destination = DTW (Detroit); GRR/LAN/FNT not yet priced.
+
+| Option | Route | Price |
+|---|---|---|
+| Cheapest | LGA/EWR → ATL → DTW (Frontier, 1 stop, ~7.5–8h) | **$157–162** |
+| Best value | JFK → DTW nonstop (JetBlue, 2h14, 27 Aug) | **$179** |
+| Nonstop in-window | EWR → DTW nonstop (United, ~1h55) | **$250** |
+| JFK nonstop in-window | JFK → DTW (JetBlue, 2h14) | $247 |
+
+Baggage: personal item only on all of the above. Frontier fares detour via Atlanta — wrong direction, ~6h penalty to save ~$20. Prices are a point-in-time snapshot; re-run the Kiwi search before quoting.
