@@ -1,0 +1,587 @@
+#!/usr/bin/env python3
+"""swarm-vm — run handoff-style agent jobs (claude -p, devin, anything) on raw
+VMs over ssh, with pid hygiene, bounded logs and spend caps.
+
+Nothing is installed on the VM: this file pipes itself over `ssh host python3 -`.
+
+  swarm-vm -H vm1 start --name fix-bug --budget-usd 2 --ttl 3600 -- \
+        claude -p "fix the failing test" --output-format stream-json --verbose
+  swarm-vm ls                       # all hosts: pid, state, rss, cost, tokens
+  swarm-vm -H vm1 logs <id> -n 50
+  swarm-vm -H vm1 kill <id>
+  swarm-vm reap                     # orphans, stale runs, log disk cap (cron it)
+  swarm-vm spend                    # per-host + fleet spend today
+
+Hosts: -H a,b | $SWARM_VM_HOSTS | ~/.config/swarm-vm/hosts (one per line).
+Host `local` runs the agent on this machine (testing / same-box jobs).
+
+What the VM-side supervisor guarantees
+  pids   each job runs in its own session; the supervisor records pid/pgid and
+         the process start time, so kill/reap never signal a recycled pid, and
+         kill takes down the whole process group (no orphaned grandchildren).
+  logs   stdout+stderr flow through the supervisor, not a shell redirect:
+         size-capped with rotation (--max-log-mb), secrets redacted.
+  spend  usage is metered live from stream-json / total_cost_usd lines. The job
+         is killed when it exceeds --budget-usd / --budget-tokens, runs past
+         --ttl, or the VM's daily cap ($SWARM_VM_DAILY_USD) is spent. Costs are
+         tracked per session_id and summed, so wrappers that run several
+         `claude -p` calls are counted in full. Cache-read tokens are tracked
+         separately and do NOT count toward --budget-tokens.
+         Subscription (chat login) runs report notional cost; tokens still count.
+  limits --max-procs / --max-rss-mb kill a runaway process group (fork bombs,
+         leaks) — checked every 2s.
+
+VM-side config: ~/.swarm-vm/env (chmod 600, KEY=VAL lines, loaded into the job
+env — keeps API keys out of argv/ssh history). Optional price table for token
+estimates when the tool doesn't report cost: SWARM_VM_PRICE_IN / _OUT (USD per
+million tokens; cache write/read priced at SWARM_VM_CACHE_WRITE_X=1.25 /
+SWARM_VM_CACHE_READ_X=0.1 times the input price). State lives in ~/.swarm-vm (override: $SWARM_VM_HOME).
+"""
+import argparse, concurrent.futures, datetime, json, os, re, secrets, selectors, shlex, signal, subprocess, sys, time
+
+HOME = os.environ.get("SWARM_VM_HOME") or os.path.expanduser("~/.swarm-vm")
+RUNS = os.path.join(HOME, "runs")
+GRACE = 10  # seconds between SIGTERM and SIGKILL
+
+
+# ───────────────────────── VM side ─────────────────────────
+
+def now(): return time.time()
+def today(): return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+
+
+def ps_field(pid, field):
+    try:
+        out = subprocess.run(["ps", "-o", field + "=", "-p", str(pid)], capture_output=True, text=True).stdout
+        return " ".join(out.split()) or None
+    except OSError:
+        return None
+
+
+def proc_stat(pid):
+    """(state, starttime) from /proc (stable ticks since boot); ps fallback off Linux."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            rest = f.read().rsplit(")", 1)[1].split()
+        return rest[0], rest[19]
+    except (OSError, IndexError):
+        pass
+    st = ps_field(pid, "stat"); lst = ps_field(pid, "lstart")
+    return (st[0], lst) if st and lst else (None, None)
+
+
+def alive(pid, start):
+    """True only if pid exists, is not a zombie, AND is the process we recorded
+    (guards against pid reuse; /proc starttime does not jitter like ps lstart)."""
+    if not pid or start is None:
+        return False
+    state, st = proc_stat(pid)
+    return st == start and state not in (None, "Z")
+
+
+def group_stats(pgid):
+    """(nprocs, rss_mb) of a process group."""
+    try:
+        out = subprocess.run(["ps", "-ax", "-o", "pgid=,rss="], capture_output=True, text=True).stdout
+    except OSError:
+        return 0, 0
+    n = kb = 0
+    for line in out.splitlines():
+        p = line.split()
+        if len(p) == 2 and p[0] == str(pgid):
+            n += 1; kb += int(p[1])
+    return n, kb // 1024
+
+
+def rdir(rid): return os.path.join(RUNS, rid)
+
+
+def load(rid):
+    with open(os.path.join(rdir(rid), "meta.json")) as f:
+        return json.load(f)
+
+
+def save(m):
+    p = os.path.join(rdir(m["id"]), "meta.json")
+    with open(p + ".tmp", "w") as f:
+        json.dump(m, f)
+    os.replace(p + ".tmp", p)
+
+
+def all_runs():
+    if not os.path.isdir(RUNS):
+        return []
+    out = []
+    for rid in sorted(os.listdir(RUNS)):
+        try: out.append(load(rid))
+        except (OSError, ValueError): pass
+    return out
+
+
+LEDGER = lambda: os.path.join(HOME, "spend.jsonl")
+LIVE = ("running", "orphan", "lost", "starting")
+
+
+def close_out(m):
+    """Finalise a run: ledger first (over-count beats under-count), then meta."""
+    m["ended"] = m.get("ended") or now(); m["cost"] = round(m["cost"], 4)
+    with open(LEDGER(), "a") as f:
+        f.write(json.dumps({"day": today(), "id": m["id"], "name": m["name"], "cost": m["cost"],
+                            "tokens": m["tokens"], "state": m["state"], "ts": now()}) + "\n")
+    m["ledgered"] = True; save(m)
+
+
+def spend_today():
+    """Cost + tokens today on this VM: ledger + every run not yet ledgered
+    (running, or orphaned/lost without a clean close-out)."""
+    cost = tok = 0.0
+    if os.path.exists(LEDGER()):
+        for line in open(LEDGER()):
+            try: e = json.loads(line)
+            except ValueError: continue
+            if e.get("day") == today():
+                cost += e.get("cost", 0); tok += e.get("tokens", 0)
+    for m in all_runs():
+        if not m.get("ledgered") and m["state"] in LIVE:
+            cost += m.get("cost", 0); tok += m.get("tokens", 0)
+    return {"day": today(), "cost": round(cost, 4), "tokens": int(tok)}
+
+
+def check_env_file():
+    p = os.path.join(HOME, "env")
+    if os.path.exists(p) and os.stat(p).st_mode & 0o077:
+        return f"{p} is group/world-readable: chmod 600 it (it holds API keys)"
+
+
+def load_env_file():
+    env = dict(os.environ)
+    p = os.path.join(HOME, "env")
+    if os.path.exists(p):
+        for line in open(p):
+            line = line.strip()
+            if line.startswith("export "): line = line[7:]
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                env[k.strip()] = v.strip().strip("'\"")
+    return env
+
+
+SECRET_NAME = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD)", re.I)
+GENERIC_SECRET = re.compile(r"(sk-[A-Za-z0-9_\-]{16,}|Bearer\s+[A-Za-z0-9._\-]{16,}|gh[pousr]_[A-Za-z0-9]{20,})")
+
+
+def redactor(env):
+    vals = sorted({v for k, v in env.items() if SECRET_NAME.search(k) and len(v) >= 8}, key=len, reverse=True)
+    def redact(s):
+        for v in vals: s = s.replace(v, "[REDACTED]")
+        return GENERIC_SECRET.sub("[REDACTED]", s)
+    return redact
+
+
+class Meter:
+    """Accumulates tokens/cost from claude stream-json / OpenAI-shaped usage lines.
+
+    Per session_id: per-message usage is max-merged (stream-json repeats a message
+    id per content block), a `result` line's total_cost_usd replaces that
+    session's estimate, and sessions are summed."""
+    def __init__(self, m):
+        self.m, self.s = m, {}
+        e = os.environ.get
+        self.pin, self.pout = float(e("SWARM_VM_PRICE_IN") or 0), float(e("SWARM_VM_PRICE_OUT") or 0)
+        self.wx, self.rx = float(e("SWARM_VM_CACHE_WRITE_X") or 1.25), float(e("SWARM_VM_CACHE_READ_X") or 0.1)
+
+    def est(self, t):    # t = (input, cache_write, cache_read, output)
+        return (t[0] * self.pin + t[1] * self.pin * self.wx + t[2] * self.pin * self.rx + t[3] * self.pout) / 1e6
+
+    def feed(self, line):
+        if not line.startswith("{"):
+            return
+        try: o = json.loads(line)
+        except ValueError: return
+        if not isinstance(o, dict): return
+        s = self.s.setdefault(str(o.get("session_id") or "_"), {"msgs": {}, "tot": (0, 0, 0, 0), "cost": None})
+        msg = o.get("message") if isinstance(o.get("message"), dict) else None
+        u = msg.get("usage") if msg else (o.get("usage") if o.get("type") != "result" else None)
+        changed = False
+        if isinstance(u, dict):
+            new = (u.get("input_tokens") or u.get("prompt_tokens") or 0, u.get("cache_creation_input_tokens") or 0,
+                   u.get("cache_read_input_tokens") or 0, u.get("output_tokens") or u.get("completion_tokens") or 0)
+            key = (msg or {}).get("id") or f"#{len(s['msgs'])}"
+            old = s["msgs"].get(key, (0, 0, 0, 0))
+            merged = tuple(max(a, b) for a, b in zip(old, new))
+            if merged != old:
+                s["msgs"][key] = merged; s["tot"] = tuple(sum(x) for x in zip(*s["msgs"].values())); changed = True
+        if o.get("type") == "result" and isinstance(o.get("total_cost_usd"), (int, float)):
+            s["cost"] = float(o["total_cost_usd"]); changed = True
+        if changed: self.rollup()
+
+    def rollup(self):
+        tin = cw = cr = tout = 0; cost = 0.0
+        for s in self.s.values():
+            a, b, c, d = s["tot"]; tin += a; cw += b; cr += c; tout += d
+            if s["cost"] is not None: cost += s["cost"]
+            elif self.pin or self.pout: cost += self.est(s["tot"])
+        m = self.m
+        m["tokens_in"], m["tokens_out"], m["tokens_cache_read"] = tin + cw, tout, cr
+        m["tokens"] = tin + cw + tout            # cache reads excluded: they re-count the whole context every turn
+        m["cost"] = round(cost, 4)
+
+
+class Log:
+    """Size-capped log: log + log.1, each max_bytes/2, so total <= max_bytes."""
+    def __init__(self, path, max_bytes):
+        self.path, self.half = path, max(1024, max_bytes // 2)
+        self.f = open(path, "ab"); self.size = self.f.tell()
+    def write(self, data):
+        if self.size + len(data) > self.half:
+            self.f.close(); os.replace(self.path, self.path + ".1")
+            self.f = open(self.path, "ab"); self.size = 0
+        self.f.write(data); self.f.flush(); self.size += len(data)
+
+
+def kill_group(pgid, grace=GRACE, proc=None):
+    """SIGTERM the whole group, SIGKILL after `grace`. Pass the Popen so the
+    leader is reaped (a zombie leader keeps killpg(pgid, 0) succeeding)."""
+    for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 2)):
+        try: os.killpg(pgid, sig)
+        except ProcessLookupError: return True
+        end = now() + wait
+        while now() < end:
+            if proc: proc.poll()
+            try: os.killpg(pgid, 0)
+            except ProcessLookupError: return True
+            time.sleep(0.1)
+    return False
+
+
+def supervise(m):
+    """Runs detached: spawn the job, pipe its output to the log, meter, enforce."""
+    env = load_env_file()
+    redact = redactor(env)
+    meter, log = Meter(m), Log(os.path.join(rdir(m["id"]), "log"), m["max_log_mb"] * 1024 * 1024)
+    try:
+        p = subprocess.Popen(m["cmd"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             start_new_session=True, env=env, cwd=m.get("cwd") or None)
+    except OSError as e:
+        m.update(state="failed", reason=f"spawn: {e}"); close_out(m); return
+    m.update(state="running", watcher=os.getpid(), watcher_start=proc_stat(os.getpid())[1],
+             pid=p.pid, pgid=p.pid, pid_start=proc_stat(p.pid)[1]); save(m)
+
+    stop = {"reason": None}
+    signal.signal(signal.SIGTERM, lambda *_: stop.update(reason="killed"))
+    signal.signal(signal.SIGINT, lambda *_: stop.update(reason="killed"))
+    sel = selectors.DefaultSelector(); sel.register(p.stdout, selectors.EVENT_READ)
+    st = {"buf": b"", "save": 0, "r": 0, "d": 0}
+    daily, MAXLINE = float(os.environ.get("SWARM_VM_DAILY_USD", 0) or 0), 1 << 20
+
+    def emit(raw):
+        line = redact(raw.decode("utf-8", "replace"))
+        log.write((line + "\n").encode()); meter.feed(line)
+
+    def ingest(chunk):
+        *lines, st["buf"] = (st["buf"] + chunk).split(b"\n")
+        if len(st["buf"]) > MAXLINE:                 # newline-free flood: don't buffer without bound
+            lines.append(st["buf"]); st["buf"] = b""
+        for raw in lines: emit(raw)
+
+    def drain():                                     # read whatever is still in the pipe
+        while sel.select(timeout=0.2):
+            chunk = os.read(p.stdout.fileno(), 65536)
+            if not chunk: break
+            ingest(chunk)
+        if st["buf"]: emit(st["buf"]); st["buf"] = b""
+
+    def check():
+        if stop["reason"]: return
+        t = now()
+        if m["ttl"] and t - m["started"] > m["ttl"]: stop["reason"] = "ttl"
+        elif m["budget_usd"] and m["cost"] >= m["budget_usd"]: stop["reason"] = "budget-usd"
+        elif m["budget_tokens"] and m["tokens"] >= m["budget_tokens"]: stop["reason"] = "budget-tokens"
+        elif (m["max_procs"] or m["max_rss_mb"]) and t - st["r"] > 2:
+            st["r"] = t; n, rss = group_stats(p.pid)
+            if m["max_procs"] and n > m["max_procs"]: stop["reason"] = "max-procs"
+            elif m["max_rss_mb"] and rss > m["max_rss_mb"]: stop["reason"] = "max-rss"
+        if not stop["reason"] and daily and t - st["d"] > 5:   # ledger scan is not free
+            st["d"] = t
+            if spend_today()["cost"] >= daily: stop["reason"] = "daily-cap"
+
+    while not stop["reason"]:
+        if sel.select(timeout=1):
+            chunk = os.read(p.stdout.fileno(), 65536)
+            if not chunk: break                      # EOF: every writer closed the pipe
+            ingest(chunk)
+        elif p.poll() is not None:
+            break                                    # idle and the job is gone: pipe is drained
+        check()
+        if now() - st["save"] > 1: save(m); st["save"] = now()
+
+    if stop["reason"]:
+        kill_group(p.pid, proc=p); drain()
+        m["reason"] = stop["reason"]; m["state"] = "killed"
+    else:
+        kill_group(p.pid, grace=3, proc=p)           # sweep grandchildren the job left behind
+        drain()
+        m["exit"] = p.wait(); m["state"] = "done" if m["exit"] == 0 else "failed"; m["reason"] = f"exit {m['exit']}"
+    close_out(m)
+
+
+def a_start(a):
+    os.makedirs(RUNS, mode=0o700, exist_ok=True)
+    bad = check_env_file()
+    if bad:
+        print(json.dumps({"error": bad})); return 4
+    daily = float(os.environ.get("SWARM_VM_DAILY_USD", 0) or 0)
+    sp = spend_today()
+    if daily and sp["cost"] >= daily:
+        print(json.dumps({"error": f"daily cap ${daily} reached (spent ${sp['cost']})"})); return 3
+    rid = time.strftime("%m%d-%H%M%S-") + secrets.token_hex(2)
+    os.makedirs(rdir(rid), mode=0o700)
+    m = dict(id=rid, name=a.name or rid, cmd=a.cmd, cwd=a.cwd, state="starting", started=now(), ttl=a.ttl,
+             budget_usd=a.budget_usd, budget_tokens=a.budget_tokens, max_log_mb=a.max_log_mb,
+             max_procs=a.max_procs, max_rss_mb=a.max_rss_mb, cost=0.0, tokens=0, tokens_in=0, tokens_out=0,
+             tokens_cache_read=0, ledgered=False)
+    save(m)
+    if os.fork():                      # parent: wait for the supervisor to publish the pid, then return
+        for _ in range(50):
+            time.sleep(0.1)
+            try:
+                m = load(rid)
+                if m["state"] != "starting": break
+            except (OSError, ValueError): pass
+        print(json.dumps({"id": rid, "pid": m.get("pid"), "state": m["state"], "log": os.path.join(rdir(rid), "log")}))
+        return 0
+    os.setsid()
+    if os.fork(): os._exit(0)          # second fork: fully detached from ssh
+    fd = os.open(os.devnull, os.O_RDWR)
+    for n in (0, 1, 2): os.dup2(fd, n)  # ssh must not wait on our stdio
+    try: supervise(m)
+    finally: os._exit(0)
+
+
+def reconcile(m):
+    """Fix up state for runs whose supervisor vanished; returns live info."""
+    if m["state"] != "running":
+        return m
+    if alive(m.get("watcher"), m.get("watcher_start")):
+        return m
+    if alive(m.get("pid"), m.get("pid_start")):
+        m["state"] = "orphan"            # job alive, supervisor gone → no logs/budget enforcement
+    else:
+        m.update(state="lost", reason="supervisor and job gone"); close_out(m)
+    return m
+
+
+def view(m):
+    reconcile(m)
+    n, rss = group_stats(m["pgid"]) if m["state"] in ("running", "orphan") and m.get("pgid") else (0, 0)
+    return {**{k: m.get(k) for k in ("id", "name", "state", "reason", "pid", "cost", "tokens", "budget_usd", "ttl")},
+            "age": int((m.get("ended") or now()) - m["started"]), "procs": n, "rss_mb": rss}
+
+
+def a_ls(a):
+    rows = [view(m) for m in all_runs()]
+    if not a.all: rows = [r for r in rows if r["state"] in ("running", "orphan", "starting")] or rows[-5:]
+    print(json.dumps({"runs": rows, "spend": spend_today()}))
+
+
+def a_logs(a):
+    p = os.path.join(rdir(a.id), "log")
+    lines = []
+    for f in (p + ".1", p):
+        if os.path.exists(f): lines += open(f, errors="replace").read().splitlines()
+    print("\n".join(lines[-a.n:]))
+
+
+def a_kill(a):
+    try: m = load(a.id)
+    except (OSError, ValueError):
+        print(json.dumps({"error": f"no such run: {a.id}"})); return 1
+    reconcile(m)
+    if m["state"] == "running":
+        os.kill(m["watcher"], signal.SIGTERM)       # supervisor kills the group and closes the ledger
+        for _ in range(int((GRACE + 5) * 5)):
+            time.sleep(0.2)
+            if load(a.id)["state"] != "running": break
+        print(json.dumps({"id": a.id, "state": load(a.id)["state"]}))
+    elif m["state"] == "orphan":
+        ok = kill_group(m["pgid"]); m.update(state="killed", reason="orphan-killed"); close_out(m)
+        print(json.dumps({"id": a.id, "state": "killed", "clean": ok}))
+    else:
+        print(json.dumps({"id": a.id, "state": m["state"], "note": "not running"}))
+
+
+def a_reap(a):
+    """Kill verified orphans, drop old finished runs, enforce the state-dir disk cap."""
+    import shutil
+    report = {"orphans_killed": [], "lost": [], "deleted": []}
+    for m in all_runs():
+        s_ = reconcile(m)["state"]
+        if s_ == "orphan":
+            kill_group(m["pgid"]); m.update(state="killed", reason="orphan-killed"); close_out(m)
+            report["orphans_killed"].append(m["id"])
+        elif s_ == "lost": report["lost"].append(m["id"])
+    done = lambda m: m["state"] not in LIVE
+    cutoff = now() - a.days * 86400
+    for m in all_runs():
+        if done(m) and (m.get("ended") or m["started"]) < cutoff:
+            shutil.rmtree(rdir(m["id"]), ignore_errors=True); report["deleted"].append(m["id"])
+    def size(d): return sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(d) for f in fs)
+    cap = a.max_disk_mb * 1024 * 1024
+    for m in sorted(all_runs(), key=lambda m: m.get("ended") or m["started"]):
+        if not os.path.isdir(RUNS) or size(RUNS) <= cap: break
+        if done(m):
+            shutil.rmtree(rdir(m["id"]), ignore_errors=True); report["deleted"].append(m["id"])
+    if os.path.exists(LEDGER()) and not any(not done(m) for m in all_runs()):   # compact: keep 30 days
+        keep = [l for l in open(LEDGER()) if (json.loads(l).get("ts", 0) if l.strip() else 0) > now() - 30 * 86400]
+        with open(LEDGER() + ".tmp", "w") as f: f.writelines(keep)
+        os.replace(LEDGER() + ".tmp", LEDGER())
+    report["disk_mb"] = round(size(RUNS) / 1048576, 1) if os.path.isdir(RUNS) else 0
+    print(json.dumps(report))
+
+
+def a_spend(a):
+    print(json.dumps(spend_today()))
+
+
+def agent_main(argv):
+    ap = argparse.ArgumentParser(prog="agent"); sub = ap.add_subparsers(dest="c", required=True)
+    s = sub.add_parser("start"); s.add_argument("--name"); s.add_argument("--cwd")
+    s.add_argument("--ttl", type=int, default=0); s.add_argument("--budget-usd", type=float, default=0)
+    s.add_argument("--budget-tokens", type=int, default=0); s.add_argument("--max-log-mb", type=int, default=64)
+    s.add_argument("--max-procs", type=int, default=0); s.add_argument("--max-rss-mb", type=int, default=0)
+    s.add_argument("cmd", nargs="+"); s.set_defaults(f=a_start)
+    s = sub.add_parser("ls"); s.add_argument("--all", action="store_true"); s.set_defaults(f=a_ls)
+    s = sub.add_parser("logs"); s.add_argument("id"); s.add_argument("-n", type=int, default=40); s.set_defaults(f=a_logs)
+    s = sub.add_parser("kill"); s.add_argument("id"); s.set_defaults(f=a_kill)
+    s = sub.add_parser("reap"); s.add_argument("--days", type=float, default=7)
+    s.add_argument("--max-disk-mb", type=int, default=512); s.set_defaults(f=a_reap)
+    s = sub.add_parser("spend"); s.set_defaults(f=a_spend)
+    a = ap.parse_args(argv)
+    os.makedirs(HOME, mode=0o700, exist_ok=True)
+    return a.f(a) or 0
+
+
+# ───────────────────────── local (laptop) side ─────────────────────────
+
+SSH = shlex.split(os.environ.get("SWARM_VM_SSH", "ssh -o BatchMode=yes -o ConnectTimeout=8"))
+
+
+def configured_hosts():
+    if os.environ.get("SWARM_VM_HOSTS"): return [h for h in os.environ["SWARM_VM_HOSTS"].split(",") if h]
+    p = os.path.expanduser("~/.config/swarm-vm/hosts")
+    if os.path.exists(p):
+        return [l.split("#")[0].strip() for l in open(p) if l.split("#")[0].strip()]
+    return []
+
+
+def hosts(arg):
+    hs = [h for h in arg.split(",") if h] if arg else configured_hosts()
+    if not hs: sys.exit("no hosts: use -H, $SWARM_VM_HOSTS or ~/.config/swarm-vm/hosts")
+    return hs
+
+
+def remote(host, args, timeout=60):
+    """Run `agent <args>` on host; returns (rc, stdout, stderr). Script travels over stdin."""
+    script = open(os.path.abspath(__file__)).read()
+    if host == "local":
+        cmd = [sys.executable, "-", "agent"] + args
+    else:
+        cmd = SSH + [host, "python3 - agent " + shlex.join(args)]
+    try:
+        r = subprocess.run(cmd, input=script, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return 124, "", "timeout"
+
+
+def jremote(host, args, timeout=60):
+    rc, out, err = remote(host, args, timeout)
+    try: return json.loads(out.splitlines()[-1]) if out else {"error": err or f"rc={rc}"}
+    except ValueError: return {"error": out or err}
+
+
+def fan(hs, args, timeout=60):
+    """Run the same agent command on every host in parallel; results in host order."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(hs))) as ex:
+        return list(ex.map(lambda h: jremote(h, args, timeout), hs))
+
+
+def fleet_spend(hs):
+    res = fan(hs, ["spend"])
+    return (sum(r.get("cost", 0) for r in res), [h for h, r in zip(hs, res) if "error" in r], res)
+
+
+def fmt_age(s): return f"{s//3600}h{s%3600//60:02d}m" if s >= 3600 else f"{s//60}m{s%60:02d}s"
+
+
+def local_main(argv):
+    ap = argparse.ArgumentParser(prog="swarm-vm", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("-H", "--host", help="comma-separated hosts (default: hosts file)")
+    sub = ap.add_subparsers(dest="c", required=True)
+    s = sub.add_parser("start"); s.add_argument("--name"); s.add_argument("--cwd")
+    s.add_argument("--ttl", type=int, default=3600, help="max wall seconds (default 3600, 0=none)")
+    s.add_argument("--budget-usd", type=float, default=0); s.add_argument("--budget-tokens", type=int, default=0)
+    s.add_argument("--max-log-mb", type=int, default=64); s.add_argument("--max-procs", type=int, default=0)
+    s.add_argument("--max-rss-mb", type=int, default=0); s.add_argument("cmd", nargs=argparse.REMAINDER)
+    s = sub.add_parser("ls"); s.add_argument("--all", action="store_true")
+    s = sub.add_parser("logs"); s.add_argument("id"); s.add_argument("-n", type=int, default=40)
+    s = sub.add_parser("kill"); s.add_argument("id")
+    s = sub.add_parser("reap"); s.add_argument("--days", type=float, default=7); s.add_argument("--max-disk-mb", type=int, default=512)
+    sub.add_parser("spend")
+    a = ap.parse_args(argv)
+    hs = hosts(a.host)
+
+    if a.c == "ls":
+        print(f"{'HOST':<14}{'ID':<18}{'NAME':<16}{'STATE':<9}{'PID':<8}{'PROCS':<6}{'RSS':<8}{'AGE':<9}{'COST':<9}{'TOKENS'}")
+        for h, r in zip(hs, fan(hs, ["ls"] + (["--all"] if a.all else []))):
+            if "error" in r: print(f"{h:<14}!! {r['error']}"); continue
+            for x in r["runs"]:
+                print(f"{h:<14}{x['id']:<18}{(x['name'] or '')[:15]:<16}{x['state']:<9}{x['pid'] or '-':<8}{x['procs']:<6}"
+                      f"{str(x['rss_mb'])+'M':<8}{fmt_age(x['age']):<9}${x['cost']:<8.3f}{x['tokens']}")
+        return 0
+    if a.c == "spend":
+        total, _, res = fleet_spend(hs)
+        for h, r in zip(hs, res):
+            if "error" in r: print(f"{h:<14}!! {r['error']}"); continue
+            print(f"{h:<14}${r['cost']:<9.3f}{r['tokens']} tokens  ({r['day']} UTC)")
+        print(f"{'fleet':<14}${total:.3f}"); return 0
+    if a.c == "reap":
+        for h, r in zip(hs, fan(hs, ["reap", "--days", str(a.days), "--max-disk-mb", str(a.max_disk_mb)], 120)):
+            print(h, json.dumps(r))
+        return 0
+    if len(hs) != 1:
+        sys.exit(f"{a.c} needs exactly one host (-H)")
+    h = hs[0]
+    if a.c == "logs":
+        print(remote(h, ["logs", a.id, "-n", str(a.n)])[1]); return 0
+    if a.c == "kill":
+        print(remote(h, ["kill", a.id], 90)[1]); return 0
+    if a.c == "start":
+        cmd = a.cmd[1:] if a.cmd[:1] == ["--"] else a.cmd
+        if not cmd: sys.exit("start needs a command after --")
+        if (a.budget_usd or a.budget_tokens) and os.path.basename(cmd[0]) == "claude" and "stream-json" not in " ".join(cmd):
+            print("warning: budgets can't bite mid-run without `--output-format stream-json --verbose` "
+                  "(claude only reports usage at the end); --ttl and --max-* still apply", file=sys.stderr)
+        fleet = float(os.environ.get("SWARM_VM_FLEET_USD", 0) or 0)
+        if fleet:   # fleet-wide daily cap, checked before launching (target host + configured hosts)
+            fh = [x for x in dict.fromkeys(configured_hosts() + [h]) if x != "local"]
+            spent, down, _ = fleet_spend(fh)
+            if down:
+                msg = f"fleet cap unverifiable, unreachable: {', '.join(down)} (counted as $0)"
+                if os.environ.get("SWARM_VM_FLEET_STRICT"): sys.exit(msg + " — not starting (SWARM_VM_FLEET_STRICT)")
+                print("warning: " + msg, file=sys.stderr)
+            if spent >= fleet: sys.exit(f"fleet daily cap ${fleet} reached (spent ${spent:.2f}) — not starting")
+        args = ["start", "--ttl", str(a.ttl), "--budget-usd", str(a.budget_usd), "--budget-tokens", str(a.budget_tokens),
+                "--max-log-mb", str(a.max_log_mb),
+                "--max-procs", str(a.max_procs), "--max-rss-mb", str(a.max_rss_mb)]
+        if a.name: args += ["--name", a.name]
+        if a.cwd: args += ["--cwd", a.cwd]
+        rc, out, err = remote(h, args + ["--"] + cmd)
+        print(out or err); return rc
+    return 1
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "agent":
+        sys.exit(agent_main(sys.argv[2:]))
+    sys.exit(local_main(sys.argv[1:]))
