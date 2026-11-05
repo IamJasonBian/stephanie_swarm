@@ -105,15 +105,25 @@ bin/swarm-vm spend       # per host + fleet, today (UTC)
 bin/swarm-vm reap        # put in cron: kills verified orphans, prunes old runs, caps disk
 ```
 
-- **pids** — own session per job; pid + process start time recorded so kill/reap
-  never hit a recycled pid; kills the whole process group; leftover grandchildren
-  are swept when the job exits; a dead supervisor is detected (`orphan`) and reaped.
-- **logs** — through the supervisor, not a shell redirect: size-capped with
-  rotation (`--max-log-mb`, default 64), secrets (env values named
-  `*KEY*/*TOKEN*/*SECRET*`, `sk-…`, `Bearer …`, `ghp_…`) redacted.
-- **spend** — metered live from stream-json usage / `total_cost_usd`. Killed on
-  `--budget-usd`, `--budget-tokens`, `--ttl` (default 1h), or the VM daily cap
-  `SWARM_VM_DAILY_USD`. `SWARM_VM_FLEET_USD` refuses new starts fleet-wide.
-  Mid-run cost is a token estimate: set `SWARM_VM_PRICE_IN/_OUT` (USD per M tokens)
-  on the VM, otherwise only token budgets bite until the final `result` line
-  reports real cost. Subscription (chat-login) runs report notional cost.
+- **pids** — own session per job; identity = pid + `/proc` start time (no recycled-pid
+  kills); kills the whole process group; leftover grandchildren are swept when the job
+  exits; a dead supervisor is detected (`orphan`) and reaped. `--max-procs N` /
+  `--max-rss-mb N` kill a runaway group (fork bomb, leak); off by default.
+- **logs** — through the supervisor, not a shell redirect: size-capped with rotation
+  (`--max-log-mb`, default 64), newline-free floods bounded, secrets (env values named
+  `*KEY*/*TOKEN*/*SECRET*`, `sk-…`, `Bearer …`, `ghp_…`) redacted. `~/.swarm-vm/env`
+  must be `chmod 600` or `start` refuses.
+- **spend** — metered live from stream-json usage / `total_cost_usd`, per `session_id`
+  and summed (wrappers that run several `claude -p` calls count in full). Killed on
+  `--budget-usd`, `--budget-tokens` (cache reads excluded — they re-count the whole
+  context every turn), `--ttl` (default 1h), or the VM daily cap `SWARM_VM_DAILY_USD`
+  (checked every 5s). `SWARM_VM_FLEET_USD` refuses new starts fleet-wide (warns when a
+  host is unreachable; `SWARM_VM_FLEET_STRICT=1` refuses instead). Orphaned/lost runs
+  still count toward the day's spend.
+  Mid-run USD is an estimate: set `SWARM_VM_PRICE_IN/_OUT` (USD per M tokens) on the VM
+  (cache write/read priced at 1.25×/0.1× input, override `SWARM_VM_CACHE_WRITE_X/_READ_X`);
+  otherwise only token budgets bite until the final `result` line reports real cost.
+  `claude` needs `--output-format stream-json --verbose` or budgets can't bite mid-run
+  (`start` warns). Subscription (chat-login) runs report notional cost. Days are UTC.
+
+Tests: `python3 -m unittest tests.test_swarm_vm -v` (~25s, real processes).
