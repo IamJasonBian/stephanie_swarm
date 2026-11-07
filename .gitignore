@@ -14,3 +14,8 @@ services/**/.env
 nohup.out
 .wrangler/
 .dev.vars
+
+# bot avatar rotation (per-bot runtime state / Telethon sessions)
+.avatar_state.json
+.avatar_cache/
+*.session
